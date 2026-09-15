@@ -353,6 +353,7 @@ Apache License 2.0，见 [LICENSE](LICENSE)。
 
 
 
-Developer's notes
+## Developer's notes
+
 This is a project that is done completely by me with Deepseek API, and of course, is fully paid by myself. This app aims to help students like me to drop down notes in a way easier way and is completely free of charge, thats why its not notarized (im just a student...).
 Hope this can help you all with your studies. This project costs me around 10$usd for development, if it's useful to you and you'd like to help cover that, you can leave a small one-time donation here: paypal.me/TNed132. No pressure—using, starring, or reporting bugs is already a big help.
