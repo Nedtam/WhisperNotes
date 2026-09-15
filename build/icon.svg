@@ -1,0 +1,63 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#6b9bff"/>
+      <stop offset="0.45" stop-color="#2f66ec"/>
+      <stop offset="1" stop-color="#1a3fae"/>
+    </linearGradient>
+    <radialGradient id="sheen" cx="0.34" cy="0.24" r="0.9">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.30"/>
+      <stop offset="0.55" stop-color="#ffffff" stop-opacity="0.06"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </radialGradient>
+    <clipPath id="tile">
+      <rect x="44" y="44" width="936" height="936" rx="236"/>
+    </clipPath>
+  </defs>
+
+  <!-- 底板 -->
+  <rect x="44" y="44" width="936" height="936" rx="236" fill="url(#bg)"/>
+
+  <!-- 顶部柔光（限制在圆角内） -->
+  <g clip-path="url(#tile)">
+    <rect x="44" y="44" width="936" height="936" fill="url(#sheen)"/>
+  </g>
+
+  <!-- 内缘高光 -->
+  <rect x="46" y="46" width="932" height="932" rx="234" fill="none" stroke="#ffffff" stroke-opacity="0.14" stroke-width="4"/>
+
+  <!-- 底部内侧微阴影（为麦克风增加纵深感） -->
+  <ellipse cx="512" cy="886" rx="300" ry="34" fill="#0c1f63" opacity="0.22"/>
+
+  <!-- 波形（左下） -->
+  <g fill="#ffffff" opacity="0.92">
+    <rect x="222" y="800" width="26" height="104" rx="13"/>
+    <rect x="276" y="736" width="26" height="168" rx="13"/>
+    <rect x="330" y="668" width="26" height="236" rx="13"/>
+    <rect x="384" y="752" width="26" height="152" rx="13"/>
+  </g>
+
+  <!-- 麦克风 -->
+  <g fill="#ffffff">
+    <!-- 拾音头 -->
+    <path d="M512 268 A88 88 0 0 1 600 356 L600 510 A34 34 0 0 1 566 544 L458 544 A34 34 0 0 1 424 510 L424 356 A88 88 0 0 1 512 268 Z"/>
+    <!-- 网栅 -->
+    <g fill="#bcd3fb">
+      <rect x="448" y="402" width="128" height="16" rx="8"/>
+      <rect x="448" y="434" width="128" height="16" rx="8"/>
+      <rect x="448" y="466" width="128" height="16" rx="8"/>
+      <rect x="448" y="498" width="128" height="16" rx="8"/>
+    </g>
+    <!-- 支架弧 -->
+    <path d="M336 566 A176 176 0 0 0 688 566" fill="none" stroke="#ffffff" stroke-width="48" stroke-linecap="round"/>
+    <!-- 立杆 -->
+    <rect x="486" y="720" width="52" height="84" rx="26"/>
+    <!-- 底座 -->
+    <rect x="408" y="796" width="208" height="52" rx="26"/>
+  </g>
+
+  <!-- AI 星芒（右上） -->
+  <g fill="#ffe08a">
+    <path d="M700 128 L730 196 L798 226 L730 256 L700 324 L670 256 L602 226 L670 196 Z"/>
+  </g>
+</svg>

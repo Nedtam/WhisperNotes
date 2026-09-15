@@ -1,0 +1,46 @@
+{
+  "name": "whisper-notes",
+  "productName": "WhisperNotes",
+  "version": "0.1.3",
+  "description": "课堂实时录音转写 + AI 笔记整理（Electron + whisper.cpp + OpenRouter）",
+  "main": "./out/main/index.js",
+  "license": "Apache-2.0",
+  "private": true,
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "start": "electron-vite preview",
+    "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
+    "rebuild": "electron-rebuild -f -w better-sqlite3",
+    "setup:whisper": "bash scripts/setup-whisper.sh",
+    "smoke": "electron-vite build && ELECTRON_SMOKE=1 electron out/main/index.js",
+    "e2e": "npm run build && node tools/debug-e2e.mjs",
+    "dist": "electron-builder --mac",
+    "fetch:win-ffmpeg": "bash scripts/fetch-win-ffmpeg.sh"
+  },
+  "dependencies": {
+    "better-sqlite3": "^13.0.3",
+    "jszip": "^3.10.1",
+    "pdf-parse": "^1.1.4",
+    "pdfjs-dist": "^3.11.174"
+  },
+  "devDependencies": {
+    "@electron/rebuild": "^4.2.0",
+    "@tailwindcss/vite": "^4.3.3",
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^26.0.0",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@vitejs/plugin-react": "^5.2.0",
+    "electron": "^44.2.0",
+    "electron-builder": "^26.15.3",
+    "electron-vite": "^5.0.0",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "tailwindcss": "^4.3.3",
+    "typescript": "~5.9.3",
+    "vite": "^7.3.6",
+    "zustand": "^5.0.15"
+  },
+  "author": "whisper-notes"
+}

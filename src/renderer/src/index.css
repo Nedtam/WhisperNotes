@@ -1,0 +1,256 @@
+@import 'tailwindcss';
+
+/* ── 笔记 App 语义色板（跟随系统深浅色） ───────────────────── */
+:root {
+  --bg: #f6f6f7;
+  --surface: #ffffff;
+  --surface-2: #f1f2f4;
+  --surface-3: #e7e9ec;
+  --border: #e2e4e8;
+  --fg: #23252b;
+  --dim: #7a7f88;
+  --accent: #2563eb;
+  --accent-soft: rgba(37, 99, 235, 0.08);
+  --ok: #16a34a;
+  --warn: #d97706;
+  --err: #dc2626;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #17181c;
+    --surface: #1e2025;
+    --surface-2: #26282f;
+    --surface-3: #31343c;
+    --border: #3a3e47;
+    --fg: #e8eaef;
+    --dim: #9aa1ac;
+    --accent: #82aaff;
+    --accent-soft: rgba(130, 170, 255, 0.14);
+    --ok: #34d399;
+    --warn: #fbbf24;
+    --err: #f87171;
+  }
+}
+
+/* 让 Tailwind 直接使用语义 token（bg-surface-2 / text-dim / border-edge / text-fg …） */
+@theme inline {
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-surface-3: var(--surface-3);
+  --color-edge: var(--border);
+  --color-fg: var(--fg);
+  --color-dim: var(--dim);
+  --color-accent: var(--accent);
+  --color-accentfg: var(--accent);
+  --color-ok: var(--ok);
+  --color-warn: var(--warn);
+  --color-err: var(--err);
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: ui-sans-serif, system-ui, -apple-system, 'PingFang SC', 'Segoe UI', sans-serif;
+  background: var(--bg);
+  color: var(--fg);
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+  transition: background 0.2s ease;
+}
+
+textarea,
+input,
+select {
+  user-select: text;
+  color: var(--fg);
+  accent-color: var(--accent);
+}
+
+/* WYSIWYG 编辑区允许选词/高亮 */
+[contenteditable='true'] {
+  user-select: text;
+  -webkit-user-select: text;
+  caret-color: var(--fg);
+}
+
+/* 所有按钮默认圆角（已有 rounded-* 工具类的按钮保持自身圆角） */
+button {
+  border-radius: 0.6rem;
+}
+input[type='checkbox'] {
+  border-radius: 0.3rem;
+}
+
+::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--surface-3);
+  border-radius: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* ── 荧光笔 ── */
+mark.hl-yellow {
+  background: rgba(255, 213, 0, 0.55);
+  color: inherit;
+  padding: 0 1px;
+  border-radius: 2px;
+}
+mark.hl-green {
+  background: rgba(52, 211, 153, 0.45);
+  color: inherit;
+  padding: 0 1px;
+  border-radius: 2px;
+}
+mark.hl-pink {
+  background: rgba(244, 114, 182, 0.4);
+  color: inherit;
+  padding: 0 1px;
+  border-radius: 2px;
+}
+mark.hl-blue {
+  background: rgba(96, 165, 250, 0.42);
+  color: inherit;
+  padding: 0 1px;
+  border-radius: 2px;
+}
+mark.hl-orange {
+  background: rgba(251, 146, 60, 0.44);
+  color: inherit;
+  padding: 0 1px;
+  border-radius: 2px;
+}
+@media (prefers-color-scheme: light) {
+  mark.hl-yellow { background: rgba(255, 213, 0, 0.5); }
+  mark.hl-green { background: rgba(52, 211, 153, 0.35); }
+  mark.hl-pink { background: rgba(244, 114, 182, 0.32); }
+  mark.hl-blue { background: rgba(96, 165, 250, 0.32); }
+  mark.hl-orange { background: rgba(251, 146, 60, 0.34); }
+}
+
+/* 可调宽高的表格：固定布局，宽高由 colgroup/行高控制 */
+.wn-fixed {
+  table-layout: fixed;
+}
+/* 隐形边缘：整篇笔记内容与表格都在这条线上自动折行，不越界 */
+[contenteditable='true'] {
+  overflow-wrap: anywhere;
+}
+table td,
+table th {
+  overflow-wrap: anywhere;
+}
+table.wn-fixed td,
+table.wn-fixed th {
+  overflow: hidden;
+}
+/* 空表格单元至少一行高（视觉上更好点选/拖动） */
+table td:empty,
+table th:empty {
+  height: 34px;
+}
+
+/* ── 组件 ── */
+@layer components {
+  .panel {
+    border-radius: 14px;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    box-shadow: 0 8px 24px -18px rgba(0, 0, 0, 0.35);
+  }
+  .btn,
+  .btn-primary,
+  .btn-ghost,
+  .btn-danger {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.55rem;
+    border-radius: 0.8rem;
+    padding: 0.56rem 1.2rem;
+    font-size: 0.875rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: filter 0.15s, background 0.15s, transform 0.05s;
+    user-select: none;
+    white-space: nowrap;
+    color: var(--fg);
+    border: 1px solid transparent;
+  }
+  .btn:disabled,
+  .btn-primary:disabled,
+  .btn-ghost:disabled,
+  .btn-danger:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+  .btn-primary {
+    background: var(--accent);
+    color: #fff;
+  }
+  @media (prefers-color-scheme: light) {
+    .btn-primary {
+      color: #fff;
+    }
+  }
+  .btn-primary:hover:not(:disabled) {
+    filter: brightness(1.08);
+  }
+  .btn-primary:active:not(:disabled) {
+    transform: scale(0.98);
+  }
+  .btn-ghost {
+    background: var(--surface-2);
+    border-color: var(--border);
+  }
+  .btn-ghost:hover:not(:disabled) {
+    background: var(--surface-3);
+  }
+  .btn-danger {
+    background: rgba(220, 38, 38, 0.08);
+    border-color: rgba(220, 38, 38, 0.35);
+    color: var(--err);
+  }
+  .btn-danger:hover:not(:disabled) {
+    background: rgba(220, 38, 38, 0.16);
+  }
+  .inp {
+    width: 100%;
+    border-radius: 0.7rem;
+    border: 1px solid var(--border);
+    background: var(--surface-2);
+    padding: 0.45rem 0.7rem;
+    font-size: 0.875rem;
+    color: var(--fg);
+    outline: none;
+    transition: border-color 0.15s;
+  }
+  .inp:focus {
+    border-color: var(--accent);
+  }
+  .inp::placeholder {
+    color: var(--dim);
+  }
+  select.inp option {
+    background: var(--surface);
+    color: var(--fg);
+  }
+  .lbl {
+    display: block;
+    margin-bottom: 0.35rem;
+    font-size: 0.74rem;
+    font-weight: 500;
+    color: var(--dim);
+  }
+}
