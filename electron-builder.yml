@@ -1,0 +1,83 @@
+appId: com.whispernotes.app
+productName: WhisperNotes
+copyright: Apache-2.0
+
+directories:
+  output: release
+  buildResources: build
+
+# 只打包应用本体；用户的文件/录音/API Key/笔记等在系统用户目录，不会进包
+files:
+  - out/**/*
+  - package.json
+  - build/icon.png
+  - build/icon.icns
+  - '!**/*.map'
+  # 用户的课件/导出/测试数据一律不进包
+  - '!**/SYE*/**'
+  - '!**/*+SYE*'
+  - '!**/*.pdf'
+  - '!tools/**'
+  # pdfjs 的可选依赖（渲染画布用），我们只做文本抽取，不需要且常编不过
+  - '!**/node_modules/canvas/**'
+  # better-sqlite3 只需要当前平台的预编译二进制与源码无关部分（省 ~20MB）
+  - '!**/node_modules/better-sqlite3/deps/**'
+  - '!**/node_modules/better-sqlite3/prebuilds/linux*/**'
+  - '!release/**'
+
+asar: true
+# better-sqlite3 v13 是 N-API + 自带预编译二进制，无需按 Electron ABI 重编；
+# 打开 npmRebuild 会让 @electron/rebuild 去编 pdfjs 的可选依赖 canvas（需要 cairo/pango，大多数人编不过）
+npmRebuild: false
+
+mac:
+  category: public.app-category.productivity
+  icon: build/icon.icns
+  darkModeSupport: true
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
+  extraResources:
+    - from: native/mac
+      to: native/mac
+  target:
+    - target: dmg
+      arch:
+        - arm64
+    - target: zip
+      arch:
+        - arm64
+
+win:
+  icon: build/icon.png
+  artifactName: WhisperNotes-${version}-win-${arch}.${ext}
+  target:
+    - target: nsis
+      arch:
+        - x64
+    - target: zip
+      arch:
+        - x64
+  extraResources:
+    - from: native/win
+      to: native/win
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: always
+  createStartMenuShortcut: true
+  shortcutName: WhisperNotes
+
+dmg:
+  title: WhisperNotes
+  artifactName: WhisperNotes-${version}-${arch}.${ext}
+  contents:
+    - x: 130
+      y: 220
+    - x: 410
+      y: 220
+      type: link
+      path: /Applications

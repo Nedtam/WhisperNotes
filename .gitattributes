@@ -1,0 +1,12 @@
+# 统一换行，避免 Windows 上 checkout 后脚本/源码出现 CRLF 问题
+* text=auto eol=lf
+
+# 二进制必须标记，否则 Windows 上可能被当作文本转换而损坏（引擎 dll/exe、模型、图标）
+*.exe   binary
+*.dll   binary
+*.dylib binary
+*.bin   binary
+*.icns  binary
+*.ico   binary
+*.png   binary
+native/** binary

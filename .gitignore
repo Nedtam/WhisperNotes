@@ -1,0 +1,28 @@
+node_modules/
+out/
+dist/
+*.log
+*.tsbuildinfo
+.DS_Store
+!scripts/*.md
+qa-shots
+.tmp-slides.cjs
+
+# build artifacts
+release/
+out/
+
+# ── 用户材料：绝不提交（课堂录音/课件 PDF/导出笔记/测试产物）──
+*.m4a
+*.mp3
+*.wav
+SYE*/
+SN+*/
+*+SYE*
+*_Class*_student.pdf
+qa-shots/
+native/mac-cpu/
+*.part
+
+# Windows 解码器：约 83MB，超过 GitHub 100MB 限制，构建时用 scripts/fetch-win-ffmpeg.sh 下载
+native/win/bin/ffmpeg.exe

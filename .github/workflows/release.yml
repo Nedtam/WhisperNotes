@@ -1,0 +1,115 @@
+name: Build & Release
+
+# 触发方式：
+#  1) 推 tag（如 v0.1.3）→ 自动构建 macOS(arm64) + Windows(x64) 并创建 GitHub Release
+#  2) 仓库页面 Actions → Build & Release → Run workflow（只构建，产物在 run 的 Artifacts 里）
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  # ── Windows x64（CPU 版引擎，无 GPU）────────────────────────────
+  # 必须在 Windows 运行器上构建：better-sqlite3 是原生模块，node-gyp 不支持从 macOS 交叉编译到 Windows
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install deps
+        run: npm ci
+      - name: Build renderer/main/preload
+        run: npm run build
+      - name: Fetch Windows ffmpeg (not stored in the repo, ~83MB)
+        shell: bash
+        run: bash scripts/fetch-win-ffmpeg.sh
+      - name: Package (NSIS installer + portable zip)
+        run: npx electron-builder --win --x64 --publish never
+        env:
+          # 没有 Windows 代码签名证书：明确关闭签名，但不关闭 exe 元数据/图标编辑（由 resedit 完成，无需 wine）
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-x64
+          path: |
+            release/*.exe
+            release/*.zip
+          if-no-files-found: error
+
+  # ── macOS arm64 ────────────────────────────────────────────────
+  macos:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install deps
+        run: npm ci
+      - name: Build renderer/main/preload
+        run: npm run build
+
+      # 有 Developer ID 证书时才做「正式签名 + 公证」；没有就 ad-hoc 签名（用户需按 README 绕过 Gatekeeper）
+      - name: Import Developer ID certificate (optional)
+        if: ${{ secrets.MAC_CERT_P12 != '' }}
+        env:
+          MAC_CERT_P12: ${{ secrets.MAC_CERT_P12 }}
+          MAC_CERT_PASSWORD: ${{ secrets.MAC_CERT_PASSWORD }}
+        run: |
+          echo "$MAC_CERT_P12" | base64 --decode > /tmp/cert.p12
+          security create-keychain -p actions /tmp/build.keychain
+          security default-keychain -s /tmp/build.keychain
+          security unlock-keychain -p actions /tmp/build.keychain
+          security import /tmp/cert.p12 -k /tmp/build.keychain -P "$MAC_CERT_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k actions /tmp/build.keychain
+          rm -f /tmp/cert.p12
+
+      - name: Package (signed when certificate present)
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: ${{ secrets.MAC_CERT_P12 != '' && 'true' || 'false' }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: npx electron-builder --mac --arm64 --publish never
+
+      - name: Ad-hoc deep sign (no certificate)
+        if: ${{ secrets.MAC_CERT_P12 == '' }}
+        run: bash scripts/sign-adhoc.sh
+
+      - name: Notarize + staple (only with certificate)
+        if: ${{ secrets.MAC_CERT_P12 != '' && secrets.APPLE_ID != '' }}
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: bash scripts/notarize.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-arm64
+          path: |
+            release/*.dmg
+            release/*.zip
+          if-no-files-found: error
+
+  # ── 打 tag 时创建 Release ──────────────────────────────────────
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [windows, macos]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
