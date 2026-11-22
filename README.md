@@ -44,11 +44,6 @@ It is deliberately narrow: transcription is local and always available, and the 
 - 🔍 **Nothing hidden** — organizing runs as an inspectable background job: click the card for per-chunk progress, a live log, the exact upstream error, a retry button and a history of recent runs. Failures are diagnoses, not mysteries.
 - 🔁 **Self-healing organizing** — when an upstream rejects or rate-limits a request the job adapts by itself: smaller output budget → no token limit → **split the oversized input** → **backup models** → **another channel you configured**. If everything still refuses, the affected part keeps its raw transcript (clearly marked ⚠️) instead of failing the whole job. You get a note, not an error dialog.
 - 🔀 **Bring any AI channel** — OpenRouter (default, free models included), OpenAI, Gemini, Groq, Together, xAI, Mistral, DeepSeek, Moonshot/Kimi, Zhipu GLM, Qwen (DashScope), SiliconFlow, Volcengine Ark, MiniMax, plus **local Ollama / LM Studio** and any custom OpenAI-compatible Base URL. Add several, switch with one click, test connectivity, fetch the model list, and keep backup models per channel.
-- 🃏 **Flashcards from your notes** — AI pulls exam-worthy cards out of a note (importance ★1–5, kind, original quote), filters administrative noise out, and schedules them with SM-2 spaced repetition inside the app: due queue, grading, streak/accuracy stats, per-notebook scopes.
-- 📱 **Android review app** — a separate Capacitor client pairs with the desktop over your LAN by QR code, then works **fully offline**: browse notes/transcripts read-only, flip flashcards, grade them, and sync reviews back the next time you are on the same network. The APK is on the Releases page.
-- 📄 **Document → note** — a second, independent pipeline: drop a PDF/PPTX/DOCX/TXT/MD on the notes page and get a note made **only** from that document (key-points mode, optional `(p.12)` page citations, a dedicated prompt that never pretends a lecture happened). Scanned image-only PDFs are refused with a clear message instead of producing an empty note.
-- 🧠 **Resume-aware organizing (no more burning credit twice)** — every finished chunk is checkpointed locally. "Continue to note" reuses them and redoes **only** the parts that failed; a hard cap (45 requests per note) and a completeness floor (length + per-chunk coverage check on the final merge) keep long lectures both affordable and complete.
-- ✨ **AI-enhanced transcript** — polish a raw transcript against the slide deck with per-chunk progress, a cancel button, and the same retry/backup-model ladder as note generation.
 - 🌏 **Bilingual** — the whole interface (menus, errors, progress, even default note titles) ships in English and Simplified Chinese and switches instantly.
 
 ## Requirements
@@ -69,9 +64,6 @@ It is deliberately narrow: transcription is local and always available, and the 
 |---|---|
 | macOS (Apple Silicon) | `WhisperNotes-<version>-arm64.dmg` (recommended) or `-arm64-mac.zip` |
 | Windows (x64) | `WhisperNotes-<version>-win-x64.exe` (installer) or `-win-x64.zip` (portable) |
-| Android (review app, 8.0+) | `WhisperNotes-android.apk` — the phone only *reads* your library and reviews flashcards |
-
-Current version: **0.1.23** (desktop) / **0.1.2** (Android).
 
 **Option 2 — build it yourself** (`npm run dist:mac` / `npm run dist:win`): locally built apps carry no quarantine flag, so macOS opens them without any Gatekeeper dance. See [Packaging locally](#packaging-locally-no-ci-required).
 
@@ -136,7 +128,7 @@ mic / audio file
 ## Build from source
 
 ```bash
-git clone https://github.com/Nedtam/WhisperNotes.git
+git clone https://github.com/<you>/whisper-notes.git
 cd whisper-notes
 npm ci            # installs deps (better-sqlite3 ships N-API prebuilds — no native rebuild needed)
 npm run dev       # dev mode with HMR
@@ -267,10 +259,10 @@ Without those secrets CI falls back to **ad-hoc deep signing** (`scripts/sign-ad
 
 - [ ] Intel Mac (x64) build of the bundled engine
 - [ ] Windows arm64 package
-- [ ] OCR for scanned / image-only PDFs (doc → note)
 - [ ] Re-transcribe an archived recording with a different model/language
 - [ ] Global hotkey / menu-bar recorder
 - [ ] Optional faster-whisper backend behind the same `AsrEngine` interface
+- [ ] Per-notebook ordering & study aids (flashcards from notes)
 
 ## License & credits
 
@@ -305,11 +297,6 @@ Bundled third-party components:
 - 🗂 **转写可回炉**——每次录音/导入都归档；过几周还能对照课件精修，或直接整理成笔记，无需重新录音转写。
 - 🔍 **进度看得见**——整理是后台任务：点开卡片能看到分块进度、实时日志、上游原始报错、重试按钮和最近历史。失败是"可诊断"，不是"没反应"。
 - 🔁 **会自愈的整理**——上游拒绝或限流时任务自己降级：缩小输出预算 → 不限制输出 → **自动拆分过大的输入** → **自动改用备用模型** → **自动换到你配置的其它渠道**。全都拒绝时，受影响的段落保留原文并标 ⚠️，而不是整单失败。你拿到的是笔记，不是报错弹窗。
-- 🃏 **从笔记出闪卡**——AI 从笔记里挑"会考的东西"出卡（重要度 ★1–5、题型、原文引用），自动过滤通知类水话，用 SM-2 间隔重复在本机复习：待复习队列、四档评分、连续天数/正确率、按笔记本/笔记圈范围。
-- 📱 **安卓复习端**——独立的 Capacitor 客户端，扫码用局域网和电脑配对，之后**完全离线**可用：只读浏览笔记/转写、就地翻卡评分，下次同网再回传复习记录。安装包在 Releases 页。
-- 📄 **文档转笔记**——第二条独立管线：在笔记页拖入 PDF/PPTX/DOCX/TXT/MD，只根据该文档生成笔记（要点式、可标 `(p.12)` 页码、专用提示词，不会假装有录音）。扫描版纯图片 PDF 会明确提示不支持，而不是给你一篇空笔记。
-- 🧠 **断点续做，不再重复烧额度**——每段整理成功就落盘；点「继续转成笔记」只重做失败的那几段，已完成的直接复用。单篇 45 次请求上限 + 完成度地板（长度比例 + 逐块留痕检查）让长讲座既省额度又保证完整。
-- ✨ **AI 增强版转写**——对照课件润色原始转写，带分块进度、可取消，和整理共用同一套重试/备用模型降级。
 - 🔀 **任意 AI 渠道**——OpenRouter（默认，含免费模型）、OpenAI、Gemini、Groq、Together、xAI、Mistral、DeepSeek、Moonshot/Kimi、智谱 GLM、通义千问、SiliconFlow、火山方舟、MiniMax，还有**本地 Ollama / LM Studio** 与任意自定义 OpenAI 兼容 Base URL。可加多个、一键切换、测连通性、拉模型列表、每个渠道配备用模型。
 - 🌏 **中英双语**——界面、报错、进度、默认标题全部双语，切换即时生效。
 
@@ -331,9 +318,6 @@ Bundled third-party components:
 |---|---|
 | macOS（Apple Silicon） | `WhisperNotes-<版本>-arm64.dmg`（推荐）或 `-arm64-mac.zip` |
 | Windows（x64） | `WhisperNotes-<版本>-win-x64.exe`（安装包）或 `-win-x64.zip`（免安装） |
-| Android（复习端，8.0+） | `WhisperNotes-android.apk`——手机只**读**文库并复习闪卡 |
-
-当前版本：桌面 **0.1.23** / 安卓 **0.1.2**。
 
 **方式二：自己打包**（`npm run dist:mac` / `npm run dist:win`）——本地构建的 app 没有隔离标记，macOS 上双击即开，见[本地打包](#本地打包不需要-ci)。
 
@@ -398,7 +382,7 @@ Bundled third-party components:
 ## 从源码运行
 
 ```bash
-git clone https://github.com/Nedtam/WhisperNotes.git
+git clone https://github.com/<你的用户名>/whisper-notes.git
 cd whisper-notes
 npm ci            # 安装依赖（better-sqlite3 自带 N-API 预编译，无需重编）
 npm run dev       # 开发模式（热更新）

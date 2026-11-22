@@ -1,7 +1,7 @@
 {
   "name": "whisper-notes",
   "productName": "WhisperNotes",
-  "version": "0.1.23",
+  "version": "0.1.24",
   "description": "课堂实时录音转写 + AI 笔记整理（Electron + whisper.cpp + 多渠道路由）",
   "main": "./out/main/index.js",
   "license": "Apache-2.0",

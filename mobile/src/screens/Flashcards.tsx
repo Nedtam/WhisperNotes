@@ -190,7 +190,7 @@ export default function Flashcards({
 
   if (review && current) {
     return (
-      <div className="flex h-full flex-col">
+      <div className="flex h-full w-full min-w-0 flex-col">
         <div className="flex items-center gap-3 border-b border-edge px-4 py-3">
           <span className="text-xs text-dim">{t('cards.review.progress', { i: review.idx + 1, n: review.queue.length })}</span>
           <div className="h-1 flex-1 overflow-hidden rounded-full bg-surface-3">
@@ -241,7 +241,7 @@ export default function Flashcards({
   }
 
   return (
-    <div className="flex h-full flex-col">
+    <div className="flex h-full w-full min-w-0 flex-col">
       <div className="shrink-0 space-y-2 px-4 pt-4">
         <div className="grid grid-cols-4 gap-2">
           {[

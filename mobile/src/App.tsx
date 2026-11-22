@@ -571,13 +571,13 @@ export default function App(): React.JSX.Element {
         ) : (
           <>
             {/* 四个页签常驻挂载：切页面/进详情返回后选择都还在 */}
-            <div className="h-full" style={{ display: tab === 'notes' ? 'flex' : 'none' }}>
+            <div className="h-full w-full min-w-0" style={{ display: tab === 'notes' ? 'flex' : 'none' }}>
               <NotesList lib={lib} onOpen={(id) => void openNote(id)} nb={notesScope} onNb={setNotesScope} />
             </div>
-            <div className="h-full" style={{ display: tab === 'transcripts' ? 'flex' : 'none' }}>
+            <div className="h-full w-full min-w-0" style={{ display: tab === 'transcripts' ? 'flex' : 'none' }}>
               <TranscriptsList lib={lib} onOpen={(id) => void openTranscript(id)} />
             </div>
-            <div className="h-full" style={{ display: tab === 'cards' ? 'flex' : 'none' }}>
+            <div className="h-full w-full min-w-0" style={{ display: tab === 'cards' ? 'flex' : 'none' }}>
               <Flashcards
                 conn={conn}
                 online={online}
@@ -593,7 +593,7 @@ export default function App(): React.JSX.Element {
                 }}
               />
             </div>
-            <div className="h-full" style={{ display: tab === 'settings' ? 'flex' : 'none' }}>
+            <div className="h-full w-full min-w-0" style={{ display: tab === 'settings' ? 'flex' : 'none' }}>
               <SettingsScreen
                 conn={conn}
                 online={online}

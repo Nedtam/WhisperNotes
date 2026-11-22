@@ -38,7 +38,7 @@ export default function SettingsScreen({
 }): React.JSX.Element {
   const [confirming, setConfirming] = useState(false)
   return (
-    <div className="h-full overflow-y-auto px-4 pb-28 pt-4">
+    <div className="h-full w-full min-w-0 overflow-y-auto px-4 pb-28 pt-4">
       <div className="panel p-4">
         <div className="flex items-center justify-between">
           <span className="text-sm font-medium">{t('mobile.connected')}</span>

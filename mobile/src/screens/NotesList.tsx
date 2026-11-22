@@ -77,7 +77,7 @@ export default function NotesList({
   }, [lib, nb, q])
 
   return (
-    <div className="flex h-full flex-col">
+    <div className="flex h-full w-full min-w-0 flex-col">
       <div className="sticky top-0 z-10 space-y-2 bg-bg/95 px-3 pb-2 pt-3 backdrop-blur">
         <input
           className="inp"
