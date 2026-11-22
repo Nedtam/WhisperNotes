@@ -179,6 +179,31 @@ try {
   rec('按钮去掉了双击缩放等待（touch-action: manipulation）', drag.touchOnButton === 'manipulation', `touch-action=${drag.touchOnButton}`)
   rec('关闭了页面级回弹/下拉刷新（overscroll-behavior: none）', drag.overscroll === 'none', `overscroll=${drag.overscroll}`)
 
+  // ⑥ 布局宽度回归：整页不许有"比视口还宽"的容器（只有横向筛选条允许内部滚动）
+  const width = await dc.evalJs(`(() => {
+    const W = window.innerWidth
+    const over = []
+    document.querySelectorAll('*').forEach((el) => {
+      if (el.closest('[data-tab]')) return
+      const r = el.getBoundingClientRect()
+      const scrollable = getComputedStyle(el).overflowX === 'auto' || getComputedStyle(el).overflowX === 'scroll'
+      if (!scrollable && r.width > W + 1) over.push({ tag: el.tagName, cls: String(el.className || '').slice(0, 40), w: Math.round(r.width) })
+    })
+    const search = document.querySelector('input[placeholder]')?.getBoundingClientRect()
+    const card = document.querySelector('ul li button')?.getBoundingClientRect()
+    return {
+      W,
+      docSW: document.documentElement.scrollWidth,
+      rootW: Math.round(document.getElementById('root').getBoundingClientRect().width),
+      searchRight: search ? Math.round(search.right) : null,
+      cardRight: card ? Math.round(card.right) : null,
+      over: over.slice(0, 6)
+    }
+  })()`)
+  rec('没有比视口更宽的容器（不再把内容裁到屏幕外）', width.over.length === 0, JSON.stringify(width.over))
+  rec('搜索框与笔记卡片都收在屏幕内', width.searchRight !== null && width.searchRight <= width.W + 1 && width.cardRight !== null && width.cardRight <= width.W + 1, JSON.stringify({ searchRight: width.searchRight, cardRight: width.cardRight, W: width.W }))
+  rec('文档宽度 = 视口宽度（不会出现横向可拖的整页）', width.docSW <= width.W + 1 && width.rootW <= width.W + 1, `docSW=${width.docSW} rootW=${width.rootW}`)
+
   rec('无渲染层异常', dc.errs.length === 0, dc.errs.slice(0, 2).join(' | '))
 } catch (e) {
   rec('脚本', false, String(e))
