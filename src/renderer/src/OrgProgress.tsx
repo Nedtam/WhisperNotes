@@ -14,6 +14,8 @@ function statusText(s: OrgJob['status'] | OrgJobHistory['status']): string {
       return t('org.statusError')
     case 'canceled':
       return t('org.statusCanceled')
+    case 'incomplete':
+      return t('trans.noteIncomplete')
     default:
       return t('org.statusDone')
   }
@@ -25,6 +27,8 @@ function statusColor(s: OrgJob['status'] | OrgJobHistory['status']): string {
       return 'text-err border-red-500/40'
     case 'canceled':
       return 'text-dim border-edge'
+    case 'incomplete':
+      return 'text-amber-300 border-amber-500/50'
     case 'done':
       return 'text-emerald-300 border-emerald-500/40'
     default:
@@ -33,7 +37,15 @@ function statusColor(s: OrgJob['status'] | OrgJobHistory['status']): string {
 }
 
 function barColor(s: OrgJob['status']): string {
-  return s === 'error' ? 'bg-red-500' : s === 'done' ? 'bg-emerald-500' : s === 'canceled' ? 'bg-surface-3' : 'bg-[var(--accent)]'
+  return s === 'error'
+    ? 'bg-red-500'
+    : s === 'incomplete'
+      ? 'bg-amber-500'
+      : s === 'done'
+        ? 'bg-emerald-500'
+        : s === 'canceled'
+          ? 'bg-surface-3'
+          : 'bg-[var(--accent)]'
 }
 
 /** 阶段进度条：把当前 stage/part/parts 画成一个小进度 */

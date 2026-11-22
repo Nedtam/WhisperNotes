@@ -3,6 +3,7 @@ import { create } from 'zustand'
 import { setLang, t, tError } from './i18n'
 import type { AudioInput } from './mic'
 import type {
+  AsrStatus,
   AppSettings,
   AsrSegment,
   AsrStateMsg,
@@ -12,6 +13,7 @@ import type {
   LlmProgress,
   ModelProgress,
   ModelStatus,
+  NoteLength,
   NoteRecord,
   Notebook,
   OrganizeJobDone,
@@ -20,7 +22,7 @@ import type {
   OrganizeRequest
 } from '../../shared/types'
 
-export type TabId = 'capture' | 'transcripts' | 'notes' | 'settings'
+export type TabId = 'capture' | 'transcripts' | 'notes' | 'cards' | 'settings'
 
 /** 界面上的整理任务（比主进程事件多了状态、日志、耗时） */
 export interface OrgJob {
@@ -35,7 +37,7 @@ export interface OrgJob {
   requests?: number
   startedAt: number
   updatedAt: number
-  status: 'queued' | 'running' | 'error' | 'done' | 'canceled'
+  status: 'queued' | 'running' | 'error' | 'done' | 'canceled' | 'incomplete'
   error?: string
   logs: string[]
   noteId?: string
@@ -48,7 +50,7 @@ export interface OrgJob {
 export interface OrgJobHistory {
   jobId: string
   title: string
-  status: 'done' | 'error' | 'canceled'
+  status: 'done' | 'error' | 'canceled' | 'incomplete'
   detail: string
   error?: string
   at: number
@@ -96,6 +98,8 @@ export function markNoteDeleted(id: string): void {
 export interface PendingNote {
   id?: string
   title: string
+  /** lecture=录音/转写笔记（默认）· doc=文档笔记 */
+  kind?: 'lecture' | 'doc'
   noteMd: string
   sourceText: string
   templateId: string
@@ -105,7 +109,7 @@ export interface PendingNote {
 }
 
 export interface ToastMsg {
-  kind: 'ok' | 'err' | 'info'
+  kind: 'ok' | 'err' | 'info' | 'warn'
   msg: string
 }
 
@@ -138,7 +142,7 @@ interface AppState {
   modelProgress: ModelProgress | null
   segments: AsrSegment[]
   transcriptText: string
-  draftText: string
+  asrStatus: AsrStatus | null
   level: number
   elapsedMs: number
   startedAt: number
@@ -154,6 +158,10 @@ interface AppState {
   flashNoteId: string | null
   /** 是否正在导入录音转写（退出确认用） */
   importing: boolean
+  /** 录音/转写忙时拖进来的音频文件排队，等空闲了自动依次转写（录音中也能直接拖文件） */
+  importQueue: Array<{ path: string; name: string }>
+  /** 刚转写完、还没转成笔记的转写（拖入文件后一键转成笔记） */
+  pendingNoteSources: Array<{ id: string; title: string; text: string }>
   /** 笔记本导航（左侧全局栏用）：列表 + 当前选择（'all' | 'none' | notebookId） */
   notebooks: Notebook[]
   nbSel: string
@@ -161,12 +169,12 @@ interface AppState {
   notes: NoteRecord[] | null
   toast: ToastMsg | null
   saving: boolean
-  lastLength: 'concise' | 'standard' | 'detailed'
+  lastLength: NoteLength
   layout: LayoutState
   langVer: number
   audioInputs: AudioInput[]
 
-  setLastLength(l: 'concise' | 'standard' | 'detailed'): void
+  setLastLength(l: NoteLength): void
   setNavW(w: number): void
   setMidW(w: number): void
 
@@ -174,7 +182,7 @@ interface AppState {
   setEngine(m: AsrStateMsg): void
   addSegment(s: AsrSegment): void
   clearTranscript(): void
-  setDraft(t: string): void
+  setAsrStatus(st: AsrStatus | null): void
   setTranscriptText(t: string): void
   setLevel(v: number): void
   tickElapsed(): void
@@ -188,11 +196,17 @@ interface AppState {
   setOrganizing(b: boolean): void
   setOrgProgress(p: LlmProgress | null): void
   setImporting(b: boolean): void
+  enqueueImport(item: { path: string; name: string }): void
+  shiftImport(): void
+  setPendingNoteSources(list: Array<{ id: string; title: string; text: string }>): void
   setNotebooks(list: Notebook[]): void
   setNbSel(id: string): void
   upsertOrgJob(j: OrganizeJobEvent): void
   failOrgJob(jobId: string, error: string, canceled?: boolean): void
-  finishOrgJob(jobId: string, info: { requests?: number; chunks?: number; noteId?: string; truncated?: boolean; continuations?: number }): void
+  finishOrgJob(
+    jobId: string,
+    info: { requests?: number; chunks?: number; noteId?: string; truncated?: boolean; continuations?: number; status?: 'done' | 'incomplete' }
+  ): void
   removeOrgJob(jobId: string): void
   setOrgPanelOpen(b: boolean): void
   setFlashNoteId(id: string | null): void
@@ -216,7 +230,7 @@ export const useApp = create<AppState>((set, get) => ({
   modelProgress: null,
   segments: [],
   transcriptText: '',
-  draftText: '',
+  asrStatus: null,
   level: 0,
   elapsedMs: 0,
   startedAt: 0,
@@ -227,6 +241,8 @@ export const useApp = create<AppState>((set, get) => ({
   orgPanelOpen: false,
   flashNoteId: null,
   importing: false,
+  importQueue: [],
+  pendingNoteSources: [],
   notebooks: [],
   nbSel: 'all',
   pending: null,
@@ -280,8 +296,8 @@ export const useApp = create<AppState>((set, get) => ({
       const joined = text ? text + '\n' + s.text : s.text
       return { segments: [...st.segments, s], transcriptText: joined }
     }),
-  clearTranscript: () => set({ segments: [], transcriptText: '', draftText: '', elapsedMs: 0 }),
-  setDraft: (t) => set({ draftText: t }),
+  clearTranscript: () => set({ segments: [], transcriptText: '', asrStatus: null, elapsedMs: 0 }),
+  setAsrStatus: (st) => set({ asrStatus: st }),
   setTranscriptText: (t) => set({ transcriptText: t }),
   setLevel: (v) => set({ level: v }),
   tickElapsed: () => set((st) => ({ elapsedMs: st.elapsedMs + 1000 })),
@@ -302,6 +318,12 @@ export const useApp = create<AppState>((set, get) => ({
   setOrganizing: (b) => set({ organizing: b }),
   setOrgProgress: (p) => set({ orgProgress: p }),
   setImporting: (b) => set({ importing: b }),
+  enqueueImport: (item) =>
+    set((st) =>
+      st.importQueue.some((q) => q.path === item.path) ? st : { importQueue: [...st.importQueue, item] }
+    ),
+  shiftImport: () => set((st) => ({ importQueue: st.importQueue.slice(1) })),
+  setPendingNoteSources: (list) => set({ pendingNoteSources: list }),
   setNotebooks: (list) => set({ notebooks: list }),
   setNbSel: (id) => set({ nbSel: id }),
   upsertOrgJob: (j) =>
@@ -370,7 +392,7 @@ export const useApp = create<AppState>((set, get) => ({
         x.jobId === jobId
           ? {
               ...x,
-              status: 'done' as const,
+              status: (info.status ?? 'done') as 'done' | 'incomplete',
               part: x.parts || x.part,
               updatedAt: Date.now(),
               requests: info.requests ?? x.requests,
@@ -446,6 +468,30 @@ export function handleOrganizeJob(p: OrganizeJobEvent): void {
 export async function handleOrganizeDone(p: OrganizeJobDone): Promise<void> {
   const st = useApp.getState()
   try {
+    if (p.incomplete) {
+      // 缺段落 → 不写笔记库（笔记页只放完整笔记），转写页给黄色提示 + 「继续转成笔记」
+      st.finishOrgJob(p.jobId, { status: 'incomplete', requests: p.requests, chunks: p.chunks })
+      st.pushOrgHistory({
+        jobId: p.jobId,
+        title: p.title,
+        status: 'incomplete',
+        detail: p.degradedReason || t('trans.noteIncomplete'),
+        at: Date.now(),
+        requests: p.requests,
+        chunks: p.chunks
+      })
+      st.toastMsg({
+        kind: 'warn',
+        msg: `${t('trans.noteIncompleteWarn')}${p.degradedReason ? ' ' + tError(p.degradedReason) : ''}`
+      })
+      setTimeout(() => useApp.getState().removeOrgJob(p.jobId), 8000)
+      try {
+        useApp.getState().setUsage(await window.api.meta.dailyUsage())
+      } catch {
+        /* ignore */
+      }
+      return
+    }
     if (p.mode === 'replace' && p.replaceId) {
       // 整理期间这条笔记被删了 → 不写回（否则等于把它“复活”）
       if (isNoteDeleted(p.replaceId)) {
@@ -516,6 +562,7 @@ export async function handleOrganizeDone(p: OrganizeJobDone): Promise<void> {
     } else {
       const rec = await window.api.notes.save({
         title: p.title,
+        kind: p.kind === 'doc' ? 'doc' : 'lecture',
         sourceText: p.sourceText,
         noteMd: p.noteMd,
         templateId: p.templateId || 'study',
@@ -523,6 +570,10 @@ export async function handleOrganizeDone(p: OrganizeJobDone): Promise<void> {
         tags: []
       })
       await refreshNotes()
+      if (p.transcriptId) {
+        // 这份转写已经成功转成笔记 → 转写页去掉黄框
+        await window.api.trans.setNoteStatus(p.transcriptId, 'ok', undefined, rec.id).catch(() => undefined)
+      }
       st.finishOrgJob(p.jobId, {
         requests: p.requests,
         chunks: p.chunks,
@@ -549,6 +600,7 @@ export async function handleOrganizeDone(p: OrganizeJobDone): Promise<void> {
       st.setPending({
         id: rec.id,
         title: rec.title,
+        kind: rec.kind === 'doc' ? 'doc' : 'lecture',
         noteMd: rec.noteMd,
         sourceText: rec.sourceText,
         templateId: rec.templateId,
@@ -635,4 +687,9 @@ export async function retryOrgJob(jobId: string): Promise<void> {
   }
   st.removeOrgJob(jobId)
   await startOrganize(req)
+}
+
+// 自动化测试驱动句柄（按需读取 store；不参与任何业务逻辑）
+if (typeof window !== 'undefined') {
+  ;(window as unknown as { __wnStore?: typeof useApp }).__wnStore = useApp
 }

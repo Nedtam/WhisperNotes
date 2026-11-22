@@ -355,6 +355,12 @@ function normalizeMathSpan(inner: string): string {
  * 还原 LaTeX / HTML 实体 / 转义写法 / 不可见字符。
  * 幂等：已经是纯文本时原样返回（快速路径）。
  */
+/** 把 <br> / <br/> / <BR > 统一成 <br>（渲染端已支持，避免显示成字面量） */
+export function normalizeBreaks(text: string): string {
+  if (!text || !/<br/i.test(text)) return text
+  return text.replace(/<br\s*\/?\s*>/gi, '<br>')
+}
+
 export function normalizeNotation(input: string): string {
   if (!input) return input
   // 快速路径：没有任何可疑标记就直接返回
@@ -403,4 +409,77 @@ function safeFromCodePoint(cp: number): string {
 export function needsNormalization(text: string): boolean {
   if (!text) return false
   return normalizeNotation(text) !== text
+}
+
+/**
+ * 把老式荧光语法 `==文字==` 规范成 HTML `<mark class="hl-yellow">`（幂等、代码段受保护）。
+ * 规则与预览一致：内容不能以空白/= 开头结尾，且必须含字母/数字/汉字。
+ * 这样 `a == b` 这类代码式比较不会被误判，围栏/反引号内的 == 完全不动。
+ */
+export function normalizeHighlights(md: string): string {
+  if (!md || !md.includes('==')) return md
+  const lines = md.replace(/\r/g, '').split('\n')
+  let fence = false
+  const out = lines.map((line) => {
+    const f = line.trimStart().startsWith('```') || line.trimStart().startsWith('~~~')
+    if (f) {
+      fence = !fence
+      return line
+    }
+    if (fence) return line
+    // 先摘出行内代码
+    const codes: string[] = []
+    const guarded = line.replace(/`+[^`]*`+/g, (m) => {
+      codes.push(m)
+      return `\uE010C${codes.length - 1}\uE010`
+    })
+    const conv = guarded.replace(/==([^\s=](?:[^=\n]{0,400}?[^\s=])?)==/g, (m, c: string) =>
+      /[\p{L}\p{N}]/u.test(c) ? `<mark class="hl-yellow">${c}</mark>` : m
+    )
+    return conv.replace(/\uE010C(\d+)\uE010/g, (_m, i: string) => codes[Number(i)] ?? '')
+  })
+  return out.join('\n')
+}
+
+/** 是否需要跑荧光规范化（避免无谓写库） */
+export function needsHighlightNormalization(md: string): boolean {
+  if (!md || !md.includes('==')) return false
+  return normalizeHighlights(md) !== md
+}
+
+/**
+ * 判断文本主体语言：zh / en / mixed
+ *  · 汉字占比 > 15% → zh；拉丁字母词占比 > 85% → en；否则 mixed
+ * 用于给模型加"必须用同一种语言输出"的硬约束（中英混排是模型最常见的跑偏）。
+ */
+export function dominantLanguage(text: string): 'zh' | 'en' | 'mixed' {
+  const t = (text || '').slice(0, 20000)
+  if (!t.trim()) return 'mixed'
+  const cjk = (t.match(/[\u4e00-\u9fff]/g) ?? []).length
+  const latin = (t.match(/[A-Za-z]/g) ?? []).length
+  const total = cjk + latin
+  if (total < 20) return 'mixed'
+  const cjkRatio = cjk / total
+  if (cjkRatio > 0.15) return 'zh'
+  if (cjkRatio < 0.02) return 'en'
+  return 'mixed'
+}
+
+/** 生成给模型的"语言硬约束"（英文转写里混进中文是最常见的跑偏） */
+export function languageDirective(text: string): string {
+  const lang = dominantLanguage(text)
+  if (lang === 'en') {
+    return [
+      'LANGUAGE — STRICT: the transcript is ENGLISH. Write the whole note in English.',
+      'Do not use any Chinese characters (no Chinese headings, no Chinese explanations, no bilingual labels).',
+      'Keep terms that appear in English in English; keep proper nouns as written. If the transcript itself contains a Chinese phrase that matters, quote it in English translation and keep the original in brackets.'
+    ].join(' ')
+  }
+  if (lang === 'zh') {
+    return [
+      'LANGUAGE — STRICT: the transcript is CHINESE. Write the whole note in Simplified Chinese.',
+      '专业术语可以保留英文原词，但解释与标题必须用中文，不要整段改用英文。'
+    ].join(' ')
+  }
+  return 'LANGUAGE: keep each part in the language it appears in; never translate a whole section into another language. Avoid bilingual duplication.'
 }

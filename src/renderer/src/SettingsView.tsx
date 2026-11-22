@@ -1,10 +1,11 @@
 // 设置视图
 import React, { useEffect, useState } from 'react'
 import { useApp } from './store'
-import type { AppSettings } from '../../shared/types'
+import type { AppSettings, LlmProvider, MobileStatus } from '../../shared/types'
+import { PROVIDER_PRESETS, presetById } from '../../shared/providers'
 import { ProgressBar, Spinner, Toggle } from './ui'
 import { micPermission, requestMicPermission, listAudioInputs, resolveActiveMic } from './mic'
-import { t } from './i18n'
+import { t, tError } from './i18n'
 
 const TEMPLATE_DEFS: Array<{ id: string; key: string }> = [
   { id: 'study', key: 'tpl.study' },
@@ -41,9 +42,18 @@ export default function SettingsView(): React.JSX.Element {
   const usage = useApp((st) => st.usage)
   const audioInputs = useApp((st) => st.audioInputs)
   const [showKey, setShowKey] = useState(false)
-  const [validating, setValidating] = useState(false)
   const [downloading, setDownloading] = useState<string | null>(null)
   const [micState, setMicState] = useState<'unknown' | 'granted' | 'denied' | 'working'>('unknown')
+  // ── AI 渠道管理 ──
+  const [selChId, setSelChId] = useState<string>('')
+  const [addPresetId, setAddPresetId] = useState<string>(PROVIDER_PRESETS[0].id)
+  const [chBusy, setChBusy] = useState<'test' | 'models' | null>(null)
+  const [chModels, setChModels] = useState<string[]>([])
+  const [chMsg, setChMsg] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null)
+  // 手机连接状态（局域网只读客户端）
+  const [mobileStatus, setMobileStatus] = useState<MobileStatus | null>(null)
+  const [mobileQr, setMobileQr] = useState<{ svg: string; url: string; code: string } | null>(null)
+  const [mobileBusy, setMobileBusy] = useState(false)
 
   const patch = async (p: Partial<AppSettings>): Promise<void> => {
     await useApp.getState().patchSettings(p)
@@ -100,17 +110,20 @@ export default function SettingsView(): React.JSX.Element {
     useApp.getState().setModels(await window.api.models.status())
   }
 
-  const validate = async (): Promise<void> => {
-    setValidating(true)
-    try {
-      const r = await window.api.llm.validateKey()
-      useApp.getState().toastMsg(
-        r.ok ? { kind: 'ok', msg: t('set.llm.validateOk') } : { kind: 'err', msg: r.error || t('set.llm.validateFail') }
-      )
-    } finally {
-      setValidating(false)
-    }
-  }
+  // 首屏 + 每次进入设置页都拉一次手机连接状态（服务可能在开机时自动启动，
+  // 也可能被其它窗口改动）。注意：这里不能调用下面才声明的 refreshMobile ——
+  // settings 尚未加载时组件会提前 return，该 const 仍处于 TDZ，effect 触发时会直接抛错。
+  const tabNow = useApp((st) => st.tab)
+  useEffect(() => {
+    if (tabNow !== 'settings') return
+    void (async () => {
+      try {
+        setMobileStatus(await window.api.mobile.status())
+      } catch {
+        /* 主进程未就绪时忽略 */
+      }
+    })()
+  }, [tabNow])
 
   const download = async (id: string): Promise<void> => {
     setDownloading(id)
@@ -145,6 +158,7 @@ export default function SettingsView(): React.JSX.Element {
 
   const w = s?.whisper
   const llm = s?.llm
+  const quotaLimit = Math.max(1, llm?.dailyFreeLimit ?? 1000)
   const installedCount = models?.filter((m) => m.present).length ?? 0
 
   const cancelModel = async (file: string): Promise<void> => {
@@ -181,6 +195,131 @@ export default function SettingsView(): React.JSX.Element {
         <Spinner /> {t('set.loading')}
       </div>
     )
+  }
+
+  // ── 手机连接（局域网只读） ──
+  const refreshMobile = async (): Promise<void> => {
+    try {
+      setMobileStatus(await window.api.mobile.status())
+    } catch {
+      /* 主进程未就绪时忽略 */
+    }
+  }
+  const showQr = async (): Promise<void> => {
+    setMobileBusy(true)
+    try {
+      const r = await window.api.mobile.qr()
+      if (r.ok && r.svg) setMobileQr({ svg: r.svg, url: r.url ?? '', code: r.code ?? '' })
+      else useApp.getState().toastMsg({ kind: 'err', msg: r.error || t('set.mobile.qrFail') })
+    } catch (e) {
+      useApp.getState().toastMsg({ kind: 'err', msg: t('set.mobile.qrFail') + ((e as Error).message || '') })
+    } finally {
+      setMobileBusy(false)
+    }
+  }
+  const toggleMobile = async (on: boolean): Promise<void> => {
+    setMobileBusy(true)
+    try {
+      const st = await window.api.mobile.setEnabled(on)
+      setMobileStatus(st)
+      if (on) await showQr()
+      else setMobileQr(null)
+    } catch (e) {
+      useApp.getState().toastMsg({ kind: 'err', msg: tError((e as Error).message) })
+      await refreshMobile()
+    } finally {
+      setMobileBusy(false)
+    }
+  }
+  const revokeDevice = async (id: string): Promise<void> => {
+    setMobileStatus(await window.api.mobile.revoke(id))
+  }
+
+  // ── 渠道操作 ──
+  const providers = llm.providers ?? []
+  const activeCh = providers.find((p) => p.id === llm.activeProviderId) ?? providers[0]
+  const selCh = providers.find((p) => p.id === selChId) ?? activeCh
+
+  const saveChannels = async (next: LlmProvider[], activeId?: string): Promise<void> => {
+    await patch({ llm: { ...llm, providers: next, activeProviderId: activeId ?? llm.activeProviderId } })
+  }
+  const updateCh = async (p: Partial<LlmProvider>): Promise<void> => {
+    if (!selCh) return
+    await saveChannels(providers.map((x) => (x.id === selCh.id ? { ...x, ...p } : x)))
+  }
+  const addChannel = async (presetId: string): Promise<void> => {
+    const preset = presetById(presetId)
+    if (!preset) return
+    const base = preset.id
+    let id = base
+    let n = 2
+    while (providers.some((p) => p.id === id)) id = `${base}-${n++}`
+    const ch: LlmProvider = {
+      id,
+      name: providers.some((p) => p.name === preset.name) ? `${preset.name} ${n}` : preset.name,
+      baseUrl: preset.baseUrl,
+      apiKey: '',
+      modelId: preset.modelId,
+      fallbackModels: [],
+      enabled: true,
+      ...(preset.local ? { local: true } : {})
+    }
+    const empty = providers.length === 0 || !activeCh
+    await saveChannels([...providers, ch], empty ? id : llm.activeProviderId)
+    setSelChId(id)
+    setChModels([])
+    setChMsg(null)
+    useApp.getState().toastMsg({ kind: 'ok', msg: t('set.llm.chAdded', { name: ch.name }) })
+  }
+  const removeChannel = async (): Promise<void> => {
+    if (!selCh) return
+    if (providers.length <= 1) {
+      setChMsg({ kind: 'err', text: t('set.llm.chKeepOne') })
+      return
+    }
+    const rest = providers.filter((p) => p.id !== selCh.id)
+    const nextActive = llm.activeProviderId === selCh.id ? rest[0].id : llm.activeProviderId
+    await saveChannels(rest, nextActive)
+    setSelChId(nextActive ?? '')
+    setChModels([])
+    setChMsg(null)
+  }
+  const useChannel = async (): Promise<void> => {
+    if (!selCh) return
+    await saveChannels(providers, selCh.id)
+    useApp.getState().toastMsg({ kind: 'ok', msg: t('set.llm.chNow', { name: selCh.name }) })
+  }
+  const testChannel = async (): Promise<void> => {
+    if (!selCh) return
+    setChBusy('test')
+    setChMsg(null)
+    try {
+      const r = await window.api.llm.testChannel({
+        baseUrl: selCh.baseUrl,
+        apiKey: selCh.apiKey,
+        modelId: selCh.modelId,
+        local: selCh.local
+      })
+      setChMsg(r.ok ? { kind: 'ok', text: t('set.llm.chTestOk', { reply: r.reply ?? 'pong' }) } : { kind: 'err', text: r.error ?? t('set.llm.validateFail') })
+    } finally {
+      setChBusy(null)
+    }
+  }
+  const fetchModels = async (): Promise<void> => {
+    if (!selCh) return
+    setChBusy('models')
+    setChMsg(null)
+    try {
+      const r = await window.api.llm.listModels({ baseUrl: selCh.baseUrl, apiKey: selCh.apiKey })
+      if (r.ok) {
+        setChModels(r.models)
+        setChMsg({ kind: 'ok', text: t('set.llm.chModelsOk', { n: r.models.length }) })
+      } else {
+        setChMsg({ kind: 'err', text: r.error ?? t('set.llm.chModelsFail') })
+      }
+    } finally {
+      setChBusy(null)
+    }
   }
 
   return (
@@ -310,10 +449,6 @@ export default function SettingsView(): React.JSX.Element {
               <option value={800}>{t('set.engine.ms800')}</option>
             </select>
           </Row>
-          <Row label={t('set.engine.partial')}>
-            <Toggle checked={w.partialPreview} onChange={(v) => void patch({ whisper: { ...w, partialPreview: v } })} />
-          </Row>
-
           <Row label={t('set.engine.saveWav')}>
             <Toggle checked={s.saveWav} onChange={(v) => void patch({ saveWav: v })} />
           </Row>
@@ -401,48 +536,287 @@ export default function SettingsView(): React.JSX.Element {
         </Section>
 
         {/* ── LLM ── */}
+        {/* ── 手机连接（局域网） ── */}
+        <Section title={t('set.mobile.title')} hint={t('set.mobile.hint')}>
+          <Row label={t('set.mobile.enable')}>
+            <Toggle checked={!!mobileStatus?.running} onChange={(v) => void toggleMobile(v)} />
+          </Row>
+          <p className="text-xs text-dim">
+            {mobileStatus?.running
+              ? t('set.mobile.running', { url: mobileStatus.urls[0] ?? `:${mobileStatus.port ?? ''}` })
+              : t('set.mobile.stopped')}
+            {mobileBusy ? ' …' : ''}
+          </p>
+          {mobileStatus?.running && (
+            <>
+              <p className="text-xs text-dim">
+                {t('set.mobile.counts', {
+                  notes: mobileStatus.noteCount,
+                  notebooks: mobileStatus.notebookCount,
+                  transcripts: mobileStatus.transcriptCount
+                })}
+              </p>
+              <div className="rounded-xl bg-surface-2/60 p-3">
+                <div className="flex flex-wrap items-start gap-4">
+                  <div className="shrink-0 rounded-lg bg-white p-2">
+                    {mobileQr ? (
+                      <div className="h-[240px] w-[240px] [&>svg]:h-full [&>svg]:w-full" dangerouslySetInnerHTML={{ __html: mobileQr.svg }} />
+                    ) : (
+                      <div className="flex h-[240px] w-[240px] items-center justify-center text-xs text-dim">
+                        {t('set.mobile.qr')}
+                      </div>
+                    )}
+                  </div>
+                  <div className="min-w-48 flex-1 space-y-2">
+                    <p className="text-xs text-dim">{t('set.mobile.scanHint')}</p>
+                    {mobileQr?.url && (
+                      <p className="break-all text-[11px] text-dim">
+                        {t('set.mobile.url')}：<span className="font-mono">{mobileQr.url}</span>
+                      </p>
+                    )}
+                    <button className="btn-ghost" onClick={() => void showQr()} disabled={mobileBusy}>
+                      {mobileQr ? t('set.mobile.refreshQr') : t('set.mobile.qr')}
+                    </button>
+                    <Row label={t('set.mobile.serveApk')}>
+                      <Toggle
+                        checked={mobileStatus.serveApk}
+                        onChange={(v) => void patch({ mobile: { ...(s.mobile ?? {}), serveApk: v } })}
+                      />
+                    </Row>
+                    <p className="text-[11px] text-dim">
+                      {mobileStatus.apkAvailable ? t('set.mobile.apkReady') : t('set.mobile.apkMissing')}
+                    </p>
+                  </div>
+                </div>
+              </div>
+              <div>
+                <div className="mb-2 flex items-center justify-between">
+                  <span className="lbl">{t('set.mobile.devices')}</span>
+                  {(mobileStatus.devices.length ?? 0) > 1 && (
+                    <button className="text-[11px] text-err underline" onClick={() => void window.api.mobile.revokeAll().then(setMobileStatus)}>
+                      {t('set.mobile.revokeAll')}
+                    </button>
+                  )}
+                </div>
+                {mobileStatus.devices.length === 0 ? (
+                  <p className="text-xs text-dim">{t('set.mobile.noDevices')}</p>
+                ) : (
+                  <ul className="space-y-1">
+                    {mobileStatus.devices.map((d) => (
+                      <li key={d.id} className="flex items-center justify-between rounded-lg bg-surface-2/60 px-3 py-2 text-xs">
+                        <span className="min-w-0 flex-1 truncate">
+                          {d.name}
+                          {d.lastSeen ? ` · ${t('set.mobile.lastSeen', { ts: new Date(d.lastSeen).toLocaleString() })}` : ''}
+                        </span>
+                        <button className="shrink-0 text-err underline" onClick={() => void revokeDevice(d.id)}>
+                          {t('set.mobile.revoke')}
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            </>
+          )}
+        </Section>
+
         <Section title={t('set.llm.title')} hint={t('set.llm.hint')}>
+          {/* 渠道选择 */}
           <div>
-            <span className="lbl">OpenRouter API Key</span>
-            <div className="flex gap-2">
-              <input
-                className="inp"
-                type={showKey ? 'text' : 'password'}
-                value={llm.apiKey}
-                placeholder="sk-or-…"
-                onChange={(e) => void patch({ llm: { ...llm, apiKey: e.target.value } })}
-              />
-              <button className="btn-ghost shrink-0" onClick={() => setShowKey(!showKey)}>
-                {showKey ? t('set.llm.hide') : t('set.llm.show')}
+            <span className="lbl">{t('set.llm.chCurrent')}</span>
+            <div className="flex flex-wrap items-center gap-2">
+              <select
+                className="inp !w-72"
+                value={selCh?.id ?? ''}
+                onChange={(e) => {
+                  setSelChId(e.target.value)
+                  setChModels([])
+                  setChMsg(null)
+                }}
+              >
+                {providers.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.id === llm.activeProviderId ? '✓ ' : ''}
+                    {p.name}
+                    {p.modelId ? ` · ${p.modelId}` : ''}
+                  </option>
+                ))}
+              </select>
+              <button className="btn-ghost shrink-0" onClick={() => void useChannel()} disabled={!selCh || selCh.id === llm.activeProviderId}>
+                {t('set.llm.chUse')}
+              </button>
+              <button className="btn-ghost shrink-0 text-err" onClick={() => void removeChannel()} disabled={!selCh}>
+                {t('common.delete')}
               </button>
             </div>
+            <p className="mt-1 text-[11px] text-dim">{t('set.llm.chHint')}</p>
           </div>
+
+          {/* 新增渠道 */}
           <div>
-            <span className="lbl">{t('set.llm.modelId')}</span>
-            <div className="flex gap-2">
-              <input
-                className="inp"
-                value={llm.modelId}
-                onChange={(e) => void patch({ llm: { ...llm, modelId: e.target.value } })}
-              />
-              <button className="btn-ghost shrink-0" onClick={() => void validate()} disabled={validating || !llm.apiKey}>
-                {validating ? <Spinner size={13} /> : t('set.llm.validate')}
+            <span className="lbl">{t('set.llm.chAdd')}</span>
+            <div className="flex flex-wrap items-center gap-2">
+              <select className="inp !w-72" value={addPresetId} onChange={(e) => setAddPresetId(e.target.value)}>
+                <optgroup label={t('set.llm.gIntl')}>
+                  {PROVIDER_PRESETS.filter((p) => p.group === 'intl').map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.name}
+                    </option>
+                  ))}
+                </optgroup>
+                <optgroup label={t('set.llm.gCn')}>
+                  {PROVIDER_PRESETS.filter((p) => p.group === 'cn').map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.name}
+                    </option>
+                  ))}
+                </optgroup>
+                <optgroup label={t('set.llm.gLocal')}>
+                  {PROVIDER_PRESETS.filter((p) => p.group === 'local' || p.group === 'custom').map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.name}
+                    </option>
+                  ))}
+                </optgroup>
+              </select>
+              <button className="btn-ghost shrink-0" onClick={() => void addChannel(addPresetId)}>
+                + {t('common.add')}
               </button>
+              <span className="text-[11px] text-dim">{presetById(addPresetId)?.note ?? ''}</span>
             </div>
           </div>
+
+          {selCh && (
+            <div className="space-y-3 rounded-xl bg-surface-2/60 p-3">
+              <div className="flex items-center justify-between">
+                <span className="text-sm font-medium">
+                  {t('set.llm.chEdit', { name: selCh.name })}
+                  {selCh.id === llm.activeProviderId ? ` · ${t('set.llm.chInUse')}` : ''}
+                </span>
+                {presetById(selCh.id.replace(/-\d+$/, ''))?.keyUrl && (
+                  <button
+                    className="text-[11px] text-accent underline"
+                    onClick={() => window.api.sys.openExternal(presetById(selCh.id.replace(/-\d+$/, ''))!.keyUrl!)}
+                  >
+                    {t('set.llm.chGetKey')}
+                  </button>
+                )}
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <span className="lbl">{t('set.llm.chName')}</span>
+                  <input className="inp" value={selCh.name} onChange={(e) => void updateCh({ name: e.target.value })} />
+                </div>
+                <div>
+                  <span className="lbl">{t('set.llm.baseUrl')}</span>
+                  <input className="inp" value={selCh.baseUrl} onChange={(e) => void updateCh({ baseUrl: e.target.value })} />
+                </div>
+              </div>
+              <div>
+                <span className="lbl">{t('set.llm.apiKey')}</span>
+                <div className="flex gap-2">
+                  <input
+                    className="inp"
+                    type={showKey ? 'text' : 'password'}
+                    value={selCh.apiKey}
+                    placeholder={selCh.local ? t('set.llm.chNoKeyNeeded') : 'sk-…'}
+                    onChange={(e) => void updateCh({ apiKey: e.target.value })}
+                  />
+                  <button className="btn-ghost shrink-0" onClick={() => setShowKey(!showKey)}>
+                    {showKey ? t('set.llm.hide') : t('set.llm.show')}
+                  </button>
+                </div>
+              </div>
+              <div>
+                <span className="lbl">{t('set.llm.modelId')}</span>
+                <div className="flex gap-2">
+                  <input
+                    className="inp"
+                    list={`models-${selCh.id}`}
+                    value={selCh.modelId}
+                    onChange={(e) => void updateCh({ modelId: e.target.value })}
+                  />
+                  <datalist id={`models-${selCh.id}`}>
+                    {chModels.map((m) => (
+                      <option key={m} value={m} />
+                    ))}
+                  </datalist>
+                  <button className="btn-ghost shrink-0" onClick={() => void fetchModels()} disabled={chBusy !== null}>
+                    {chBusy === 'models' ? <Spinner size={13} /> : t('set.llm.chFetchModels')}
+                  </button>
+                  <button className="btn-ghost shrink-0" onClick={() => void testChannel()} disabled={chBusy !== null}>
+                    {chBusy === 'test' ? <Spinner size={13} /> : t('set.llm.validate')}
+                  </button>
+                </div>
+              </div>
+              <div>
+                <span className="lbl">{t('set.llm.chFallbacks')}</span>
+                <input
+                  className="inp"
+                  value={(selCh.fallbackModels ?? []).join(', ')}
+                  placeholder={t('set.llm.chFallbacksPh')}
+                  onChange={(e) =>
+                    void updateCh({
+                      fallbackModels: e.target.value
+                        .split(',')
+                        .map((x) => x.trim())
+                        .filter(Boolean)
+                    })
+                  }
+                />
+                <p className="mt-1 text-[11px] text-dim">{t('set.llm.chFallbacksHint')}</p>
+              </div>
+              <div className="flex flex-wrap items-center gap-4 text-xs">
+                <label className="flex cursor-pointer items-center gap-2">
+                  <input type="checkbox" checked={selCh.local === true} onChange={(e) => void updateCh({ local: e.target.checked })} />
+                  {t('set.llm.chLocal')}
+                </label>
+                <label className="flex cursor-pointer items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={selCh.enabled !== false}
+                    onChange={(e) => void updateCh({ enabled: e.target.checked })}
+                  />
+                  {t('set.llm.chEnabled')}
+                </label>
+              </div>
+              {chMsg && <p className={chMsg.kind === 'ok' ? 'text-xs text-ok' : 'text-xs text-err'}>{chMsg.text}</p>}
+            </div>
+          )}
+
           <div>
-            <span className="lbl">{t('set.llm.baseUrl')}</span>
-            <input className="inp" value={llm.baseUrl} onChange={(e) => void patch({ llm: { ...llm, baseUrl: e.target.value } })} />
+            <Row label={t('set.llm.autoFallback')}>
+              <Toggle
+                checked={llm.autoFallback !== false}
+                onChange={(v) => void patch({ llm: { ...llm, autoFallback: v } })}
+              />
+            </Row>
+            <p className="mt-1 text-[11px] text-dim">{t('set.llm.autoFallbackHint')}</p>
           </div>
           <div className="rounded-xl bg-surface-2/70 p-3">
             <div className="flex items-center justify-between text-sm">
               <span className="text-fg">{t('set.llm.freeQuota')}</span>
               <span className="font-mono text-accent">
-                {t('set.llm.quotaValue', { used: usage?.used ?? 0 })}
+                {t('set.llm.quotaValue', { used: usage?.used ?? 0, limit: quotaLimit })}
               </span>
             </div>
             <div className="mt-2">
-              <ProgressBar pct={((usage?.used ?? 0) / 50) * 100} />
+              <ProgressBar pct={Math.min(100, ((usage?.used ?? 0) / Math.max(1, quotaLimit)) * 100)} />
+            </div>
+            <div className="mt-2 flex items-center gap-2">
+              <span className="text-[11px] text-dim">{t('set.llm.quotaLimit')}</span>
+              <input
+                className="inp !w-24 !py-1 text-xs"
+                type="number"
+                min={1}
+                max={100000}
+                value={quotaLimit}
+                onChange={(e) => {
+                  const v = Math.max(1, Math.min(100000, Number(e.target.value) || 0))
+                  void patch({ llm: { ...llm, dailyFreeLimit: v } })
+                }}
+              />
+              <span className="text-[11px] text-dim">{t('set.llm.quotaLimitHint')}</span>
             </div>
             <div className="mt-2 flex items-center justify-between text-[11px] text-dim">
               <span>{t('set.llm.quotaHint')}</span>
@@ -574,7 +948,10 @@ export default function SettingsView(): React.JSX.Element {
               <option value="16384">16384</option>
               <option value="32768">32768</option>
               <option value="65536">65536</option>
+              <option value="131072">131072</option>
+              <option value="262144">262144</option>
             </select>
+            <p className="mt-1 text-[11px] leading-relaxed text-dim">{t('set.tpl.outLimitHint')}</p>
           </div>
         </Section>
       </div>

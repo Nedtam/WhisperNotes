@@ -2,7 +2,7 @@
 // 用法:
 //   WN_KEY=sk-or-... node tools/convert-lecture.mjs \
 //       --title "SYE2066-1" --txt /tmp/sye2066.txt --json /tmp/sye2066.json \
-//       --out "/Users/nedt/Downloads/whisper notes/SYE2066-1-输出"
+//       --out "./SYE2066-1-输出"
 import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs'
 import * as path from 'node:path'
 import Database from 'better-sqlite3'

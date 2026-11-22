@@ -1,6 +1,6 @@
 // WYSIWYG Markdown 编辑器：内容 = mdToHtml 渲染的可编辑文档；输入时把 DOM 序列化回 md 供保存/同步。
 import React, { useCallback, useEffect, useRef, useState } from 'react'
-import { mdToHtml } from './md'
+import { mdToHtml } from '@shared/md'
 import { domToMd } from './domToMd'
 import { t } from './i18n'
 
@@ -255,7 +255,20 @@ export default function MdEditor({
     const el = editableRef.current
     if (!el) return
     if (domToMd(el) === value) return
+    // 整树重写（切笔记 / 撤销重做 / 外部同步）会让内容高度瞬间归零，
+    // 浏览器随即把 scrollTop 夹到 0 —— 表现为“页面突然滚回顶部”。先存后恢复。
+    const scroller = el.closest('.overflow-y-auto') as HTMLElement | null
+    const keepTop = scroller?.scrollTop ?? 0
+    const restore = (): void => {
+      if (scroller && Math.abs(scroller.scrollTop - keepTop) > 1) scroller.scrollTop = keepTop
+    }
     el.innerHTML = value ? mdToHtml(value).html : ''
+    // 立即恢复一次（强制读一次 scrollHeight 触发重排），再在下一帧兜一次
+    if (scroller) {
+      void scroller.scrollHeight
+      restore()
+      requestAnimationFrame(restore)
+    }
     lastMdRef.current = value
     // 撤销/重做导致的重建：按“变更区域相对光标在哪一侧”恢复位置（不再跳文首/跳错行）
     if (pendingRestoreRef.current && caretRestoreRef.current) {
@@ -297,7 +310,7 @@ export default function MdEditor({
   const wrapSelection = (tag: string, cls?: string): void => {
     const el = editableRef.current
     if (!el) return
-    el.focus()
+    el.focus({ preventScroll: true })
     const sel = window.getSelection()
     if (!sel || sel.isCollapsed || !sel.rangeCount) return
     const range = sel.getRangeAt(0)
@@ -340,7 +353,7 @@ export default function MdEditor({
   const toggleInline = (kind: 'b' | 'i' | 'u'): void => {
     const el = editableRef.current
     if (!el) return
-    el.focus()
+    el.focus({ preventScroll: true })
     const cmd = kind === 'b' ? 'bold' : kind === 'i' ? 'italic' : 'underline'
     try {
       document.execCommand(cmd, false)
@@ -353,7 +366,7 @@ export default function MdEditor({
   const applyInlineStyle = (css: string): void => {
     const el = editableRef.current
     if (!el || !css) return
-    el.focus()
+    el.focus({ preventScroll: true })
     const sel = window.getSelection()
     if (sel && !sel.isCollapsed && sel.rangeCount) {
       const r = sel.getRangeAt(0)
@@ -391,7 +404,7 @@ export default function MdEditor({
   const setBlockAlign = (v: string): void => {
     const el = editableRef.current
     if (!el) return
-    el.focus()
+    el.focus({ preventScroll: true })
     const sel = window.getSelection()
     const block = sel ? topBlock(sel.anchorNode ?? null, el) : null
     if (!block || block.tagName !== 'P') return
@@ -454,13 +467,13 @@ export default function MdEditor({
     if (cols.length === count) {
       return Array.from(cols).map((c) => {
         const m = (c.getAttribute('style') || '').match(/width:\s*(\d+(?:\.\d+)?)px/)
-        return m ? parseFloat(m[1]) : 80
+        return m ? Math.round(parseFloat(m[1])) : 80
       })
     }
     const heads = table.rows[0]?.cells
     const widths: number[] = []
     if (heads && heads.length === count) {
-      for (let i = 0; i < count; i++) widths.push(Math.max(30, heads[i].getBoundingClientRect().width || 80))
+      for (let i = 0; i < count; i++) widths.push(Math.round(Math.max(30, heads[i].getBoundingClientRect().width || 80)))
     } else {
       for (let i = 0; i < count; i++) widths.push(80)
     }
@@ -479,7 +492,8 @@ export default function MdEditor({
       table.insertBefore(cg, table.firstChild)
     }
     Array.from(cg.children).forEach((c, i) => {
-      if (i < widths.length) (c as HTMLElement).style.width = `${Math.max(24, widths[i])}px`
+      // 整数像素：小数会让 domToMd 的尺寸元数据解析失败（旧 bug）
+      if (i < widths.length) (c as HTMLElement).style.width = `${Math.round(Math.max(24, widths[i]))}px`
     })
     // 表格总宽随列宽变化（内部分隔只平移；拖最右缘则总宽加大）
     const sum = widths.reduce((a, b) => a + b, 0)
@@ -497,14 +511,21 @@ export default function MdEditor({
   const readRowHeights = (rows: HTMLElement[]): number[] =>
     rows.map((tr) => {
       const c = tr.querySelector(':scope > th, :scope > td') as HTMLElement | null
-      return c ? Math.max(18, c.getBoundingClientRect().height) : 24
+      return c ? Math.round(Math.max(18, c.getBoundingClientRect().height)) : 24
     })
   const writeRowHeights = (rows: HTMLElement[], heights: number[]): void => {
     rows.forEach((tr, i) => {
       const h = heights[i] ?? 0
       if (h <= 0) return
+      const px = `${Math.round(Math.max(18, h))}px`
+      // 关键：同时约束 <tr> 本身并裁切单元格内容。
+      // 只设 cell 高度时，内容比目标高的话行会被内容撑回去，
+      // 表现为"拖一条线，下面的线也被推着走"。
+      tr.style.height = px
       for (const cellEl of Array.from((tr as HTMLTableRowElement).cells)) {
-        ;(cellEl as HTMLElement).style.height = `${Math.round(Math.max(18, h))}px`
+        const el = cellEl as HTMLElement
+        el.style.height = px
+        el.style.overflow = 'hidden'
       }
     })
   }
@@ -563,7 +584,7 @@ export default function MdEditor({
         maxW: noteMaxWidth()
       }
     }
-    el.focus()
+    el.focus({ preventScroll: true })
     try {
       el.setPointerCapture(e.pointerId)
     } catch {
@@ -638,7 +659,7 @@ export default function MdEditor({
   const setHeading = (level: 1 | 2 | 3): void => {
     const el = editableRef.current
     if (!el) return
-    el.focus()
+    el.focus({ preventScroll: true })
     const sel = window.getSelection()
     const block = topBlock(sel?.anchorNode ?? null, el)
     if (!block) return
@@ -686,7 +707,7 @@ export default function MdEditor({
   const toggleTask = (): void => {
     const el = editableRef.current
     if (!el) return
-    el.focus()
+    el.focus({ preventScroll: true })
     const sel = window.getSelection()
     const block = topBlock(sel?.anchorNode ?? null, el)
     if (!block) return
@@ -749,7 +770,7 @@ export default function MdEditor({
   const insertTable = (rows: number, cols: number, anchorBlock?: HTMLElement | null): void => {
     const el = editableRef.current
     if (!el) return
-    el.focus()
+    el.focus({ preventScroll: true })
     const sel = window.getSelection()
     let block = anchorBlock && el.contains(anchorBlock) ? anchorBlock : topBlock(sel?.anchorNode ?? null, el)
     if (!block || block === el) block = null
@@ -803,7 +824,7 @@ export default function MdEditor({
     if (!img) return
     const el = editableRef.current
     if (!el) return
-    el.focus()
+    el.focus({ preventScroll: true })
     const node = document.createElement('img')
     node.className = 'my-2 max-w-full rounded-lg'
     node.alt = img.name
@@ -862,7 +883,7 @@ export default function MdEditor({
   const toggleList = (cmd: 'insertUnorderedList' | 'insertOrderedList'): void => {
     const el = editableRef.current
     if (!el) return
-    el.focus()
+    el.focus({ preventScroll: true })
     const sel = window.getSelection()
     const block = sel ? topBlock(sel.anchorNode ?? null, el) : null
     const li = block && block.tagName === 'LI' ? (block as HTMLElement) : caretLi()
@@ -875,14 +896,14 @@ export default function MdEditor({
   const toggleQuote = (): void => {
     const el = editableRef.current
     if (!el) return
-    el.focus()
+    el.focus({ preventScroll: true })
     document.execCommand('formatBlock', false, 'blockquote')
     sync()
   }
   const insertHr = (): void => {
     const el = editableRef.current
     if (!el) return
-    el.focus()
+    el.focus({ preventScroll: true })
     document.execCommand('insertHorizontalRule', false)
     sync()
   }
@@ -974,7 +995,7 @@ export default function MdEditor({
   const handleTabKey = (shift: boolean): void => {
     const el = editableRef.current
     if (!el) return
-    el.focus()
+    el.focus({ preventScroll: true })
     const sel = window.getSelection()
     const block = topBlock(sel?.anchorNode ?? null, el)
     const li = caretLi()

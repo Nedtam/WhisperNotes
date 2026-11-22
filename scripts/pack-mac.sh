@@ -4,6 +4,9 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+echo "== 0/5 同步安卓包（桌面 App 局域网直传的那份）=="
+bash scripts/sync-apk.sh
+
 echo "== 1/5 构建 =="
 npm run build
 

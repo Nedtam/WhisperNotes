@@ -2,9 +2,11 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { useApp, isNoteDeleted, markNoteDeleted, refreshNotes, type PendingNote } from './store'
 import type { NoteRecord as SharedNote, Notebook } from '../../shared/types'
-import { extractToc } from './md'
+import { extractToc } from '@shared/md'
 import MdEditor, { type PickedImage } from './MdEditor'
 import OrganizeDialog from './OrganizeDialog'
+import DocNoteDialog from './DocNoteDialog'
+import { pickDocForNote } from './importDrop'
 import { IconExport, IconSave, IconTrash, Spinner, SplitterV } from './ui'
 import { t, tError } from './i18n'
 
@@ -83,6 +85,9 @@ export default function NotesView(): React.JSX.Element {
   const [movingId, setMovingId] = useState<string | null>(null)
   const dragNoteRef = useRef<string | null>(null)
   const [dragId, setDragId] = useState<string | null>(null)
+  // 文档 → 笔记（笔记页入口：按钮选文件，或把 PDF/PPTX/DOCX/TXT/MD 直接拖到笔记列表）
+  const [docPath, setDocPath] = useState<string | null>(null)
+  const [docDrag, setDocDrag] = useState(false)
 
   // 自定义拖动影像：小胶囊「笔记本色圆点 + 笔记名」，热点在左上角，
   // 影像悬在光标右下方，不会遮住要放去的笔记本行。
@@ -176,6 +181,11 @@ export default function NotesView(): React.JSX.Element {
   const [canRedo, setCanRedo] = useState(false)
   const pendingRef = useRef(pending)
   pendingRef.current = pending
+  // 当前打开笔记的“最新”快照（标题/正文都可能随时改）。切笔记时用它落盘，
+  // 之前用的是 effect 创建时的旧快照 → 重命名会在切换笔记时被旧标题覆盖（改名丢失）。
+  const snapRef = useRef<{ id: string; p: PendingNote; md: string } | null>(null)
+  // 标题单独防抖落盘：改完名字不用等 30s，也不怕直接退出
+  const titleTimerRef = useRef<number | null>(null)
   // 主窗 → 子窗实时同步：本地编辑防抖广播（不写库）
   const syncTimerRef = useRef<number | null>(null)
   const syncPayloadRef = useRef('')
@@ -205,7 +215,20 @@ export default function NotesView(): React.JSX.Element {
 
   const patch = (p: Partial<PendingNote>): void => {
     const cur = useApp.getState().pending
-    if (cur) useApp.getState().setPending({ ...cur, ...p })
+    if (!cur) return
+    const next = { ...cur, ...p }
+    useApp.getState().setPending(next)
+    const key = next.id ?? 'new'
+    snapRef.current = { id: key, p: next, md: textRef.current }
+    // 改标题 → 1.2s 后静默保存（重命名必须立刻落库，不等自动保存周期）
+    if (p.title !== undefined) {
+      if (titleTimerRef.current) window.clearTimeout(titleTimerRef.current)
+      titleTimerRef.current = window.setTimeout(() => {
+        titleTimerRef.current = null
+        const latest = useApp.getState().pending
+        if (latest) void saveRef.current(latest, textRef.current, false)
+      }, 1200)
+    }
   }
 
   // 笔记切换/外部生成 → 重置本地缓冲
@@ -226,7 +249,9 @@ export default function NotesView(): React.JSX.Element {
     textRef.current = next
     setText(next)
     if (pendingRef.current) {
-      useApp.getState().setPending({ ...pendingRef.current, noteMd: next })
+      const merged = { ...pendingRef.current, noteMd: next }
+      snapRef.current = { id: merged.id ?? 'new', p: merged, md: next }
+      useApp.getState().setPending(merged)
     }
   }
 
@@ -307,8 +332,35 @@ export default function NotesView(): React.JSX.Element {
     await loadList()
   }
 
+  // 拖入文件 → 文档转笔记（笔记页：PDF/PPTX/DOCX/TXT/MD）
+  const handleDroppedFiles = async (files: FileList | File[]): Promise<void> => {
+    const paths: string[] = []
+    for (const f of Array.from(files).slice(0, 6)) {
+      try {
+        const p = await window.api.slides.fromFile(f)
+        if (p) paths.push(p)
+      } catch {
+        /* ignore */
+      }
+    }
+    const doc = pickDocForNote(paths)
+    if (!doc) {
+      useApp.getState().toastMsg({ kind: 'info', msg: t('doc.dropNoDoc') })
+      return
+    }
+    setDocDrag(false)
+    setDocPath(doc)
+  }
+
   // 拖拽换位（「全部笔记」「未归档」；笔记本里的顺序由结构+日期自动决定）
   const dropOnNote = (targetId: string) => (e: React.DragEvent): void => {
+    // 拖进来的若是文件（PDF/PPTX/DOCX/TXT/MD）→ 走"文档转笔记"，不是笔记排序
+    if (e.dataTransfer?.types && Array.from(e.dataTransfer.types).includes('Files')) {
+      e.preventDefault()
+      e.stopPropagation()
+      void handleDroppedFiles(e.dataTransfer.files)
+      return
+    }
     e.preventDefault()
     e.stopPropagation()
     const from = dragNoteRef.current
@@ -332,6 +384,9 @@ export default function NotesView(): React.JSX.Element {
       if (cur?.id === p.id) {
         const next = { ...cur, noteMd: p.noteMd, title: p.title || cur.title }
         if (next.noteMd !== cur.noteMd || next.title !== cur.title) st.setPending(next)
+      } else {
+        // 不是当前打开的那篇：库里已被子窗改过，刷新列表让新标题/内容可见
+        void loadList()
       }
     })
   }, [])
@@ -352,7 +407,15 @@ export default function NotesView(): React.JSX.Element {
     return () => clearTimeout(timer)
   }, [query])
 
+  /** 切走之前保存“当前这篇”的最新内容（含标题） */
+  const flushCurrent = (): void => {
+    const cur = pendingRef.current
+    if (!cur) return
+    void saveRef.current(cur, textRef.current, false)
+  }
+
   const openNote = (n: SharedNote): void => {
+    flushCurrent()
     useApp.getState().setPending({
       id: n.id,
       title: n.title,
@@ -365,9 +428,19 @@ export default function NotesView(): React.JSX.Element {
     })
   }
 
+  // 笔记页：选一份文档 → 文档转笔记（只从文档抓要点，与语音转笔记无关）
+  const pickDoc = async (): Promise<void> => {
+    try {
+      const picked = await window.api.doc.pick()
+      if (!picked) return
+      setDocPath(picked.path)
+    } catch (e) {
+      useApp.getState().toastMsg({ kind: 'err', msg: tError((e as Error).message || '') })
+    }
+  }
+
   const newNote = (): void => {
-    const cur = useApp.getState().pending
-    if (cur) void saveRef.current(cur, textRef.current, false)
+    flushCurrent()
     useApp.getState().setPending({
       title: '',
       noteMd: '',
@@ -382,6 +455,7 @@ export default function NotesView(): React.JSX.Element {
   const restoreDraft = (): void => {
     const d = readDraft()
     if (!d) return
+    flushCurrent()
     useApp.getState().setPending({
       id: d.id,
       title: d.title,
@@ -463,13 +537,26 @@ export default function NotesView(): React.JSX.Element {
     }
   }, [])
 
-  // 切换笔记前保存上一份
+  // 记录当前笔记的最新快照：每次编辑都刷新（供切换/卸载时保存）
   useEffect(() => {
     const cur = pending
-    if (!cur) return
-    const snapshot = { ...cur }
+    if (!cur) {
+      snapRef.current = null
+      return
+    }
+    snapRef.current = { id: cur.id ?? 'new', p: { ...cur }, md: textRef.current }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pending])
+
+  // 切换笔记的兜底保存：用上一篇的“最新”快照（旧写法用 effect 创建时的快照 → 改名丢失）
+  useEffect(() => {
     return () => {
-      void saveRef.current(snapshot, textRef.current, false)
+      const snap = snapRef.current
+      // 同一篇笔记（例如仅 noteMd 变化）由上面的 effect 负责，不在这里重复保存
+      if (!snap) return
+      const live = useApp.getState().pending
+      if (live && (live.id ?? 'new') === snap.id) return
+      void saveRef.current(snap.p, snap.md, false)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pending?.id ?? 'new'])
@@ -589,7 +676,9 @@ export default function NotesView(): React.JSX.Element {
                 const ra = rank.get(a.notebookId as string) as number
                 const rb = rank.get(b.notebookId as string) as number
                 if (ra !== rb) return ra - rb
-                return b.updatedAt - a.updatedAt
+                // 笔记本内按「稳定顺序」排：手动拖拽的 ord 优先，其次按笔记生成时间倒序。
+                // 以前用 updatedAt，导致打开/编辑哪篇哪篇就跳到最前（顺序会变）。
+                return (a.ord ?? 0) - (b.ord ?? 0) || b.createdAt - a.createdAt
               })
           })()
   const items: Hit[] = searchHits
@@ -624,9 +713,20 @@ export default function NotesView(): React.JSX.Element {
               onChange={(e) => setQuery(e.target.value)}
             />
           </div>
-          <button className="btn-primary m-3 !mt-2" onClick={newNote}>
-            {t('notes.new')}
-          </button>
+          {/* 竖排：左侧栏很窄，两个按钮挤一行会把文字压出按钮（按钮是 nowrap 的） */}
+          <div className="mx-3 mt-2 mb-2 flex flex-col gap-2">
+            <button className="btn-primary w-full" onClick={newNote}>
+              {t('notes.new')}
+            </button>
+            <button
+              data-doc-note="1"
+              className="btn-ghost w-full !px-3 text-xs"
+              title={t('doc.btnHint')}
+              onClick={() => void pickDoc()}
+            >
+              {t('doc.btn')}
+            </button>
+          </div>
           {!pending && draft && (
             <div className="mx-3 mb-2 flex items-center justify-between gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
               <span className="min-w-0 truncate">{t('notes.draftAt', { time: fmtDate(draft.ts) })}</span>
@@ -646,7 +746,25 @@ export default function NotesView(): React.JSX.Element {
               </span>
             </div>
           )}
-          <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-2">
+          <div
+            className="min-h-0 flex-1 overflow-y-auto px-2 pb-2"
+            data-note-dropzone="1"
+            data-doc-drag={docDrag ? '1' : '0'}
+            onDragOver={(e) => {
+              if (e.dataTransfer?.types && Array.from(e.dataTransfer.types).includes('Files')) {
+                e.preventDefault()
+                setDocDrag(true)
+              }
+            }}
+            onDragLeave={() => setDocDrag(false)}
+            onDrop={(e) => {
+              if (e.dataTransfer?.types && Array.from(e.dataTransfer.types).includes('Files')) {
+                e.preventDefault()
+                setDocDrag(false)
+                void handleDroppedFiles(e.dataTransfer.files)
+              }
+            }}
+          >
             {items.length === 0 && (
               <p className="px-3 py-6 text-center text-sm text-dim">{searchHits ? t('notes.noHits') : t('notes.none')}</p>
             )}
@@ -693,7 +811,17 @@ export default function NotesView(): React.JSX.Element {
                       title={t('notes.rowHint')}
                       className="min-w-0 flex-1 cursor-pointer"
                     >
-                      <div className="truncate text-sm font-medium text-fg">{n.title}</div>
+                      <div className="flex items-center gap-1 text-sm font-medium text-fg">
+                        {n.full?.kind === 'doc' && (
+                          <span
+                            title={t('doc.badge')}
+                            className="shrink-0 rounded bg-accent/15 px-1 text-[10px] font-normal text-accent"
+                          >
+                            {t('doc.badgeShort')}
+                          </span>
+                        )}
+                        <span className="truncate">{n.title}</span>
+                      </div>
                       <div className="mt-0.5 line-clamp-2 text-xs text-dim">{sub || `（${t('notes.empty')}）`}</div>
                       <div className="mt-1 flex items-center gap-1.5 text-[10px] text-dim">
                         <span>{fmtDate(n.updatedAt)}</span>
@@ -875,10 +1003,13 @@ export default function NotesView(): React.JSX.Element {
         )}
       </div>
 
+      {docPath && <DocNoteDialog filePath={docPath} onClose={() => setDocPath(null)} />}
+
       {showOrg && (
         <OrganizeDialog
           title={pending?.title || 'note'}
           sourceText={pending?.sourceText || ''}
+          docSource={pending?.kind === 'doc'}
           onClose={() => setShowOrg(false)}
         />
       )}

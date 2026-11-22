@@ -1,0 +1,223 @@
+@import 'tailwindcss';
+/* mdToHtml 在 shared 里，Tailwind 必须一并扫描它用到的类（border-edge / text-dim / bg-surface-2 …） */
+@source "../../src/shared";
+
+/* 与桌面端同一套语义色板，手机端跟随系统深浅色 */
+:root {
+  --bg: #f6f6f7;
+  --surface: #ffffff;
+  --surface-2: #f1f2f4;
+  --surface-3: #e7e9ec;
+  --border: #e2e4e8;
+  --fg: #23252b;
+  --dim: #7a7f88;
+  --accent: #2563eb;
+  --accent-soft: rgba(37, 99, 235, 0.08);
+  --ok: #16a34a;
+  --warn: #d97706;
+  --err: #dc2626;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #17181c;
+    --surface: #1e2025;
+    --surface-2: #26282f;
+    --surface-3: #31343c;
+    --border: #3a3e47;
+    --fg: #e8eaef;
+    --dim: #9aa1ac;
+    --accent: #82aaff;
+    --accent-soft: rgba(130, 170, 255, 0.14);
+    --ok: #34d399;
+    --warn: #fbbf24;
+    --err: #f87171;
+  }
+}
+@theme inline {
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-surface-3: var(--surface-3);
+  --color-edge: var(--border);
+  --color-fg: var(--fg);
+  --color-dim: var(--dim);
+  --color-accent: var(--accent);
+  --color-ok: var(--ok);
+  --color-warn: var(--warn);
+  --color-err: var(--err);
+}
+
+/* 移动端 webview：app 外壳固定为"可视视口"高度，页面本身永不滚动/缩放，
+   否则整页会被抖音式缩到一半，下面留一大块黑（2026-11 用户报的 bug）。
+   · 100dvh 跟随地址栏/键盘变化；· overflow:hidden 防止页面级滚动；
+   · touch-action 只允许平移，挡掉 pinch-zoom（这是"整页缩小"的来源）。 */
+html, body, #root { height: 100%; }
+html, body, #root { height: 100dvh; }
+html {
+  overflow: hidden;
+  touch-action: pan-x pan-y;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+  overscroll-behavior: none;
+}
+/* 外壳钉死在整个可视视口里：不靠百分比高度，任何 webview 都不会出现
+   "整页可以拖动/上下滚动" —— 那会让轻点被当成拖拽，按钮就点不到了。 */
+#root {
+  position: fixed;
+  inset: 0;
+  height: auto;
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+/* 可点元素去掉"双击缩放"的等待，点一下就是点一下（列表里轻点也不会被吃掉） */
+button, a, input, textarea, select, label, [role='button'] { touch-action: manipulation; }
+body {
+  margin: 0;
+  background: var(--bg);
+  overscroll-behavior: none;
+  color: var(--fg);
+  font-family: -apple-system, 'PingFang SC', 'Noto Sans SC', system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  overscroll-behavior-y: contain;
+  overflow: hidden;
+  touch-action: pan-x pan-y;
+}
+* { -webkit-tap-highlight-color: transparent; }
+
+/* ── 与电脑端一致的基础控件样式（复制自桌面 index.css，触屏下略微加高） ── */
+@layer components {
+  .panel {
+    border-radius: 14px;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    box-shadow: 0 8px 24px -18px rgba(0, 0, 0, 0.35);
+  }
+  .btn,
+  .btn-primary,
+  .btn-ghost,
+  .btn-danger {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.55rem;
+    border-radius: 0.8rem;
+    padding: 0.62rem 1.2rem;
+    font-size: 0.875rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: filter 0.15s, background 0.15s, transform 0.05s;
+    user-select: none;
+    white-space: nowrap;
+    color: var(--fg);
+    border: 1px solid transparent;
+  }
+  .btn:disabled,
+  .btn-primary:disabled,
+  .btn-ghost:disabled,
+  .btn-danger:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+  .btn-primary { background: var(--accent); color: #fff; }
+  .btn-primary:hover:not(:disabled) { filter: brightness(1.08); }
+  .btn-primary:active:not(:disabled) { transform: scale(0.98); }
+  .btn-ghost { background: var(--surface-2); border-color: var(--border); }
+  .btn-ghost:hover:not(:disabled) { background: var(--surface-3); }
+  .btn-danger { background: rgba(220, 38, 38, 0.08); border-color: rgba(220, 38, 38, 0.35); color: var(--err); }
+  .inp {
+    width: 100%;
+    border-radius: 0.7rem;
+    border: 1px solid var(--border);
+    background: var(--surface-2);
+    padding: 0.6rem 0.7rem;
+    font-size: 0.875rem;
+    color: var(--fg);
+    outline: none;
+    transition: border-color 0.15s;
+  }
+  .inp:focus { border-color: var(--accent); }
+  .inp::placeholder { color: var(--dim); }
+  select.inp option { background: var(--surface); color: var(--fg); }
+  .lbl { display: block; margin-bottom: 0.35rem; font-size: 0.74rem; font-weight: 500; color: var(--dim); }
+}
+
+/* ── 长按只允许选中"正文"，UI 文字不可选中（否则长按按钮/图标会弹出高亮与复制菜单） ── */
+button,
+nav,
+label,
+input,
+select,
+textarea,
+.btn,
+.btn-primary,
+.btn-ghost,
+[role='switch'],
+.fc-chrome {
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+/* 正文区域恢复可选中（复制笔记内容时仍可用） */
+.md-body,
+.md-body *,
+pre,
+.selectable {
+  -webkit-user-select: text;
+  user-select: text;
+  -webkit-touch-callout: default;
+}
+
+/* 荧光笔（与桌面一致） */
+mark.hl-yellow { background: rgba(255, 213, 0, 0.5); color: inherit; padding: 0 2px; border-radius: 3px; }
+mark.hl-green { background: rgba(52, 211, 153, 0.4); color: inherit; padding: 0 2px; border-radius: 3px; }
+mark.hl-pink { background: rgba(244, 114, 182, 0.36); color: inherit; padding: 0 2px; border-radius: 3px; }
+mark.hl-blue { background: rgba(96, 165, 250, 0.4); color: inherit; padding: 0 2px; border-radius: 3px; }
+mark.hl-orange { background: rgba(251, 146, 60, 0.4); color: inherit; padding: 0 2px; border-radius: 3px; }
+@media (prefers-color-scheme: light) {
+  mark.hl-yellow { background: rgba(255, 213, 0, 0.55); }
+}
+
+/* 笔记正文：表格可能带固定像素宽（桌面调过列宽），窄屏允许横向滚动而不撑破页面 */
+.md-body {
+  font-size: 15px;
+  line-height: 1.75;
+  /* 关键：不要在单词内部逐字母断行（hello 会被压成 h/e/l/l/o）。
+     优先在空格断行，仅当某个词本身超出容器时才断词。 */
+  word-break: normal;
+  overflow-wrap: break-word;
+  line-break: normal;
+  hyphens: none;
+}
+.md-body pre, .md-body code { word-break: break-all; overflow-wrap: anywhere; }
+.md-body h1 { font-size: 1.4em; font-weight: 650; margin: 1.1em 0 0.5em; }
+.md-body h2 { font-size: 1.22em; font-weight: 650; margin: 1em 0 0.45em; }
+.md-body h3 { font-size: 1.08em; font-weight: 600; margin: 0.9em 0 0.4em; }
+.md-body h4 { font-size: 1em; font-weight: 600; margin: 0.8em 0 0.35em; }
+.md-body p { margin: 0.55em 0; }
+.md-body ul, .md-body ol { margin: 0.5em 0; padding-left: 1.35em; }
+.md-body li { margin: 0.2em 0; }
+.md-body table { border-collapse: collapse; font-size: 13px; margin: 0.6em 0; max-width: none; }
+.md-body th, .md-body td { border: 1px solid var(--border); padding: 5px 8px; }
+.md-body th { text-align: left; background: var(--surface-2); }
+.md-body pre { background: var(--surface-2); padding: 10px; border-radius: 10px; overflow-x: auto; font-size: 12.5px; }
+.md-body code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.md-body img { max-width: 100%; border-radius: 10px; }
+.md-body a { color: var(--accent); }
+.md-body blockquote { border-left: 3px solid var(--border); margin: 0.6em 0; padding-left: 10px; color: var(--dim); }
+.md-body hr { border: none; border-top: 1px solid var(--border); margin: 1em 0; }
+/* 表格外包一层横向滚动 */
+/* 只有表格/图片自己可以横向拖动 */
+.md-xscroll {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  max-width: 100%;
+  margin: 0.6em 0;
+}
+.md-xscroll > table { margin: 0; max-width: none; }
+.md-xscroll-img {
+  display: block;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  max-width: 100%;
+}
+.md-xscroll-img > img { max-width: none; }

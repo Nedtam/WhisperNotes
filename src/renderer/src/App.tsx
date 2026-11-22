@@ -4,11 +4,21 @@ import { useApp, handleOrganizeJob, handleOrganizeDone, handleOrganizeError, typ
 import CaptureView from './CaptureView'
 import TranscriptionView from './TranscriptionView'
 import NotesView from './NotesView'
+import FlashcardsView from './FlashcardsView'
 import NotesNav from './NotesNav'
 import { OrgJobCards, OrgJobPanel } from './OrgProgress'
 import SettingsView from './SettingsView'
 import { IconBook, IconGear, IconMic, IconWave, SplitterV } from './ui'
 import { t, setLang } from './i18n'
+
+function IconCards(): React.JSX.Element {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="3" y="6" width="13" height="14" rx="2" />
+      <path d="M8 3h11a2 2 0 0 1 2 2v12" />
+    </svg>
+  )
+}
 
 function NavButton({
   id,
@@ -67,11 +77,11 @@ export default function App(): React.JSX.Element {
   // 订阅主进程事件
   useEffect(() => {
     const offSeg = window.api.onAsrSegment((seg) => useApp.getState().addSegment(seg))
-    const offDraft = window.api.onAsrDraft((d) => useApp.getState().setDraft(d.text))
+    const offStatus = window.api.onAsrStatus((st) => useApp.getState().setAsrStatus(st))
     const offState = window.api.onAsrState((m) => {
       const st = useApp.getState()
       st.setEngine(m)
-      if (m.state === 'idle' || m.state === 'paused') st.setDraft('')
+      if (m.state === 'idle' || m.state === 'paused') st.setAsrStatus(null)
       if (m.state === 'error' && m.detail) {
         st.toastMsg({ kind: 'err', msg: t('app.engineErr') + m.detail })
       }
@@ -116,7 +126,8 @@ export default function App(): React.JSX.Element {
     })
     return () => {
       offSeg()
-      offDraft()
+      offStatus()
+
       offState()
       offOrg()
       offJob()
@@ -182,6 +193,7 @@ export default function App(): React.JSX.Element {
           <NavButton id="capture" icon={<IconMic />} label={t('nav.record')} active={tab === 'capture'} dot={engine === 'recording' ? 'rec' : engine === 'starting' ? 'busy' : undefined} />
           <NavButton id="transcripts" icon={<IconWave />} label={t('nav.transcripts')} active={tab === 'transcripts'} />
           <NavButton id="notes" icon={<IconBook />} label={t('nav.notes')} active={tab === 'notes'} />
+          <NavButton id="cards" icon={<IconCards />} label={t('nav.cards')} active={tab === 'cards'} />
         </div>
 
         {/* 笔记导航（全部/未归档 + 笔记本树）：只在笔记页展开，把 Notes 视图的左栏让给笔记列表 */}
@@ -232,6 +244,9 @@ export default function App(): React.JSX.Element {
         <div className="h-full" style={{ display: tab === 'notes' ? 'block' : 'none' }}>
           <NotesView />
         </div>
+        <div className="h-full" style={{ display: tab === 'cards' ? 'block' : 'none' }}>
+          <FlashcardsView />
+        </div>
         <div className="h-full" style={{ display: tab === 'settings' ? 'block' : 'none' }}>
           <SettingsView />
         </div>
@@ -250,7 +265,9 @@ export default function App(): React.JSX.Element {
                 ? 'border-emerald-500/40 bg-emerald-950/90 text-emerald-200'
                 : toast.kind === 'err'
                   ? 'border-red-500/40 bg-red-950/90 text-red-200'
-                  : 'border-sky-500/40 bg-sky-950/90 text-sky-200'
+                  : toast.kind === 'warn'
+                    ? 'border-amber-500/50 bg-amber-950/90 text-amber-200'
+                    : 'border-sky-500/40 bg-sky-950/90 text-sky-200'
             }`}
           >
             {toast.msg}

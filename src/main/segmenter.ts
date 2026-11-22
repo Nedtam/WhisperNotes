@@ -1,8 +1,7 @@
 // VAD 分段器：对 16kHz mono float32 PCM 做能量检测，
-// 在有声/静音边界处切出「一句」utterance；说话期间周期性吐 partial。
+// 在有声/静音边界处切出「一句」utterance。（草稿/partial 预览已移除：定稿本身每几秒就出一次）
 export interface SegmenterEvents {
   onFinal: (samples: Float32Array, t0: number, t1: number) => void
-  onPartial: (samples: Float32Array, t0: number) => void
 }
 
 export interface SegmenterOptions {
@@ -11,8 +10,6 @@ export interface SegmenterOptions {
   sensitivity?: number
   minSilenceMs?: number
   maxSpeechSec?: number
-  partialMinMs?: number
-  partialCadenceMs?: number
   speechPadMs?: number
   minSpeechMs?: number
 }
@@ -25,8 +22,6 @@ export class VadSegmenter {
   private offDb: number
   private minSilenceFrames: number
   private maxSpeechSamples: number
-  private partialMinSamples: number
-  private partialCadenceMs: number
   private padFrames: number
   private minSpeechSamples: number
   private ev: SegmenterEvents
@@ -38,7 +33,6 @@ export class VadSegmenter {
   private utt: number[] = []
   private silenceFrames = 0
   private uttStartAbs = 0
-  private lastPartialAt = 0
   private maxSpeechStartAbs = 0
 
   constructor(ev: SegmenterEvents, opts: SegmenterOptions = {}) {
@@ -49,8 +43,6 @@ export class VadSegmenter {
     this.offDb = this.onDb - 8
     this.minSilenceFrames = Math.max(10, Math.round((opts.minSilenceMs ?? 550) / 10))
     this.maxSpeechSamples = Math.round((opts.maxSpeechSec ?? 25) * 1000 * this.sr / 1000)
-    this.partialMinSamples = Math.round(((opts.partialMinMs ?? 1500) * this.sr) / 1000)
-    this.partialCadenceMs = opts.partialCadenceMs ?? 800
     this.padFrames = Math.round((opts.speechPadMs ?? 260) / 10)
     this.minSpeechSamples = Math.round(((opts.minSpeechMs ?? 300) * this.sr) / 1000)
   }
@@ -110,16 +102,6 @@ export class VadSegmenter {
     const uttSamples = this.utt.length
     const uttMs = Math.round((uttSamples / this.sr) * 1000)
 
-    // 周期 partial（仅当尚未到句尾停顿）
-    if (
-      uttSamples >= this.partialMinSamples &&
-      this.silenceFrames * 10 < this.minSilenceFrames - 2 &&
-      nowMs - this.lastPartialAt >= this.partialCadenceMs
-    ) {
-      this.lastPartialAt = nowMs
-      this.ev.onPartial(Float32Array.from(this.utt), this.uttStartAbs / this.sr)
-    }
-
     const silenceMs = this.silenceFrames * 10
     const isMaxLen = uttMs >= (this.maxSpeechSamples / this.sr) * 1000
     if (silenceMs >= this.minSilenceFrames * 10 || isMaxLen) {
@@ -138,7 +120,6 @@ export class VadSegmenter {
     this.speech = false
     this.utt = []
     this.silenceFrames = 0
-    this.lastPartialAt = 0
 
     if (samples.length >= this.minSpeechSamples) {
       this.ev.onFinal(Float32Array.from(samples), t0, t1)

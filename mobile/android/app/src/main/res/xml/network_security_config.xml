@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 电脑端服务跑在局域网明文 HTTP 上（http://192.168.x.x:port）。
+     Android 的 domain 规则不支持通配符，因此这里放行明文；App 只会连你在电脑上扫码得到的地址，
+     地址与配对令牌都保存在本机，不经第三方。 -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>

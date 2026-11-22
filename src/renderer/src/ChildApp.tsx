@@ -55,6 +55,22 @@ export default function ChildApp({ noteId }: { noteId: string }): React.JSX.Elem
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [text, title, state])
 
+  // 关窗前强制落盘（防抖窗口内的最后一次编辑，含改名）
+  useEffect(() => {
+    const flush = (): void => {
+      if (state !== 'ready') return
+      const current = JSON.stringify({ title, noteMd: text })
+      if (current === lastExternalRef.current) return
+      window.api.notes.emitEdit({ id: noteId, title, noteMd: text })
+    }
+    window.addEventListener('beforeunload', flush)
+    return () => {
+      window.removeEventListener('beforeunload', flush)
+      flush()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [noteId, title, text, state])
+
   if (state === 'load') {
     return (
       <div className="flex h-screen items-center justify-center text-[color:var(--dim)]">

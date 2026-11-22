@@ -1,7 +1,7 @@
 name: Build & Release
 
 # 触发方式：
-#  1) 推 tag（如 v0.1.3）→ 自动构建 macOS(arm64) + Windows(x64) 并创建 GitHub Release
+#  1) 推 tag（如 v0.1.5）→ 自动构建 macOS(arm64) + Windows(x64) 并创建 GitHub Release
 #  2) 仓库页面 Actions → Build & Release → Run workflow（只构建，产物在 run 的 Artifacts 里）
 on:
   push:
@@ -113,3 +113,47 @@ jobs:
         with:
           files: dist/*
           generate_release_notes: true
+
+  # ── Android 复习客户端（可选任务）─────────────────────────────
+  # 需要仓库 Secrets：ANDROID_KEYSTORE_BASE64（keystore 的 base64）、
+  #                  ANDROID_KEYSTORE_PASSWORD、ANDROID_KEY_ALIAS、ANDROID_KEY_PASSWORD
+  # 没有这些 secret 时该任务自动跳过（不失败），APK 仍可用「局域网直传」分发。
+  android-apk:
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'push' }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check secrets
+        id: check
+        run: echo "has=${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}" >> "$GITHUB_OUTPUT"
+      - if: steps.check.outputs.has == 'true'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - if: steps.check.outputs.has == 'true'
+        uses: android-actions/setup-android@v3
+      - if: steps.check.outputs.has == 'true'
+        name: Decode keystore
+        run: |
+          mkdir -p "$HOME/.whispernotes"
+          echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 -d > "$HOME/.whispernotes/android-release.jks"
+          cat > mobile/android/keystore.properties <<EOF
+          storeFile=$HOME/.whispernotes/android-release.jks
+          storePassword=${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          keyAlias=${{ secrets.ANDROID_KEY_ALIAS }}
+          keyPassword=${{ secrets.ANDROID_KEY_PASSWORD }}
+          EOF
+      - if: steps.check.outputs.has == 'true'
+        name: Build APK
+        working-directory: mobile
+        run: |
+          npm ci
+          npm run build
+          npx cap sync android
+          cd android && ./gradlew assembleRelease --no-daemon
+      - if: steps.check.outputs.has == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: WhisperNotes-android
+          path: mobile/android/app/build/outputs/apk/release/app-release.apk

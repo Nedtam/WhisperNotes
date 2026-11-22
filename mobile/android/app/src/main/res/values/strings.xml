@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">WhisperNotes</string>
+    <string name="title_activity_main">WhisperNotes</string>
+    <string name="package_name">com.whispernotes.review</string>
+    <string name="custom_url_scheme">com.whispernotes.review</string>
+</resources>

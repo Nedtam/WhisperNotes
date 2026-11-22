@@ -3,7 +3,7 @@ import React, { useEffect, useRef, useState } from 'react'
 import { useApp } from './store'
 import OrganizeDialog from './OrganizeDialog'
 import { IconSparkle, IconTrash, Spinner } from './ui'
-import { t } from './i18n'
+import { t, tError } from './i18n'
 import type { TranscriptionRecord, TranscriptionSummary } from '../../shared/types'
 
 function fmtDur(ms: number): string {
@@ -40,8 +40,16 @@ export default function TranscriptionView(): React.JSX.Element {
   const [detail, setDetail] = useState<TranscriptionRecord | null>(null)
   const [mode, setMode] = useState<ViewMode>('raw')
   const [enhancing, setEnhancing] = useState(false)
+  /** 润色进度文案（长转写要跑几分钟，必须让用户看到在动） */
+  const [polishNote, setPolishNote] = useState('')
   const [showOrg, setShowOrg] = useState(false)
   const prevTabRef = useRef(tab)
+  // 润色进度：主进程每完成一块就推一条，直接显示在按钮旁边
+  useEffect(() => {
+    return window.api.onLlamaProgress((p) => {
+      if (p && p.stage === 'polish' && p.detail) setPolishNote(p.detail)
+    })
+  }, [])
   const listLoadedRef = useRef(false)
 
   const reload = async (keepSel = true): Promise<void> => {
@@ -101,6 +109,7 @@ export default function TranscriptionView(): React.JSX.Element {
     const raw = detail.rawText.trim()
     if (!raw) return
     setEnhancing(true)
+    setPolishNote(t('pol.working'))
     try {
       const res = await window.api.llm.polish({ sourceText: raw })
       await window.api.transcriptions.save({ id: detail.id, enhancedText: res.text, keepEnhanced: false })
@@ -113,6 +122,16 @@ export default function TranscriptionView(): React.JSX.Element {
       useApp.getState().toastMsg({ kind: 'err', msg: t('trans.genFail') + ((e as Error).message || '') })
     } finally {
       setEnhancing(false)
+      setPolishNote('')
+    }
+  }
+
+  const cancelEnhance = async (): Promise<void> => {
+    try {
+      await window.api.llm.polishCancel()
+      useApp.getState().toastMsg({ kind: 'info', msg: t('pol.canceled') })
+    } catch {
+      /* ignore */
     }
   }
 
@@ -131,6 +150,19 @@ export default function TranscriptionView(): React.JSX.Element {
   const currentText = (): string => {
     if (!detail) return ''
     return mode === 'enhanced' && detail.enhancedText ? detail.enhancedText : detail.rawText
+  }
+
+  // 从头重做：清掉这一篇的整理进度缓存（下次每段都重新整理）
+  const redoFromScratch = async (): Promise<void> => {
+    if (!detail || organizing) return
+    const txt = currentText().trim()
+    if (!txt) return
+    try {
+      await window.api.trans.clearCheckpoint(txt)
+      useApp.getState().toastMsg({ kind: 'info', msg: t('trans.noteRedoDone') })
+    } catch (e) {
+      useApp.getState().toastMsg({ kind: 'err', msg: tError((e as Error).message || '') })
+    }
   }
 
   const startOrganize = (): void => {
@@ -225,14 +257,26 @@ export default function TranscriptionView(): React.JSX.Element {
                 <button
                   key={i.id}
                   onClick={() => void openDetail(i.id)}
+                  data-trans-row={i.id}
+                  data-note-status={i.noteStatus || 'none'}
                   className={`block w-full cursor-pointer rounded-xl border px-3 py-2.5 text-left transition ${
-                    active
-                      ? 'border-[var(--accent)] bg-[var(--accent-soft)]'
-                      : 'border-transparent bg-[var(--surface-2)] hover:brightness-105'
+                    i.noteStatus === 'incomplete'
+                      ? 'border-amber-500/60 bg-amber-500/10 hover:brightness-105'
+                      : active
+                        ? 'border-[var(--accent)] bg-[var(--accent-soft)]'
+                        : 'border-transparent bg-[var(--surface-2)] hover:brightness-105'
                   }`}
                 >
                   <div className="flex min-w-0 items-center gap-1.5">
                     <span className="min-w-0 flex-1 truncate text-[13px] font-medium">{i.title || i.sourceName}</span>
+                    {i.noteStatus === 'incomplete' && (
+                      <span
+                        data-trans-badge="incomplete"
+                        className="flex shrink-0 items-center gap-0.5 rounded-full border border-amber-500/50 bg-amber-500/20 px-1.5 py-0.5 text-[9px] font-medium text-amber-300"
+                      >
+                        ⚠ {t('trans.noteIncomplete')}
+                      </span>
+                    )}
                     {i.hasEnhanced && (
                       <span className="flex shrink-0 items-center gap-0.5 rounded-full bg-amber-500/15 px-1.5 py-0.5 text-[9px] font-medium text-amber-600 dark:text-amber-300">
                         ✨{t('trans.enhancedBadge')}
@@ -286,16 +330,66 @@ export default function TranscriptionView(): React.JSX.Element {
                   {t('trans.duration', { dur: fmtDur(detail.durationMs) })}
                 </p>
               </div>
-              <div className="flex shrink-0 gap-1.5">
-                <button className="btn-ghost !px-3 !py-2 text-xs" onClick={() => void generateEnhanced()} disabled={enhancing || organizing}>
+              <div className="flex shrink-0 flex-wrap items-center justify-end gap-1.5">
+                {enhancing && (
+                  <span
+                    data-polish-note="1"
+                    className="max-w-[260px] truncate text-[11px] text-[color:var(--dim)]"
+                    title={polishNote}
+                  >
+                    {polishNote}
+                  </span>
+                )}
+                <button
+                  className="btn-ghost !px-3 !py-2 text-xs"
+                  onClick={() => void generateEnhanced()}
+                  disabled={enhancing || organizing}
+                >
                   {enhancing ? <Spinner size={13} /> : <IconSparkle />}
                   {hasEnhanced ? t('trans.regenerate') : t('trans.genEnhanced')}
                 </button>
+                {enhancing && (
+                  <button data-polish-cancel="1" className="btn-danger !px-3 !py-2 text-xs" onClick={() => void cancelEnhance()}>
+                    {t('common.cancel')}
+                  </button>
+                )}
                 <button className="btn-danger !px-3 !py-2 text-xs" onClick={() => void removeRecord()} disabled={enhancing || organizing} title={t('trans.delete')}>
                   <IconTrash />
                 </button>
               </div>
             </div>
+
+            {/* 未完成转笔记的黄色提示（与红色错误提示同款，只是黄色） */}
+            {detail.noteStatus === 'incomplete' && (
+              <div
+                data-trans-warn="incomplete"
+                className="flex items-start gap-2 border-b border-amber-500/30 bg-amber-500/10 px-5 py-2.5 text-[11.5px] leading-relaxed text-amber-200"
+              >
+                <span className="mt-px shrink-0">⚠</span>
+                <span className="min-w-0 flex-1 break-words">
+                  {detail.noteError ? tError(detail.noteError) : t('trans.noteIncompleteTip')}
+                </span>
+                <span className="flex shrink-0 items-center gap-1.5">
+                  <button
+                    data-trans-redo="1"
+                    title={t('trans.noteRedoHint')}
+                    className="cursor-pointer rounded-lg border border-amber-500/30 px-2 py-1 text-amber-200/80 transition hover:brightness-110"
+                    onClick={() => void redoFromScratch()}
+                    disabled={organizing || enhancing}
+                  >
+                    {t('trans.noteRedo')}
+                  </button>
+                  <button
+                    data-trans-continue="1"
+                    className="cursor-pointer rounded-lg border border-amber-500/50 bg-amber-500/15 px-2.5 py-1 font-medium text-amber-200 transition hover:brightness-110"
+                    onClick={startOrganize}
+                    disabled={organizing || !currentText().trim() || enhancing}
+                  >
+                    {organizing ? t('trans.organizing') : t('trans.continueNote')}
+                  </button>
+                </span>
+              </div>
+            )}
 
             {/* 版本切换 */}
             <div className="flex items-center gap-2 border-b border-edge/60 px-5 py-2">
@@ -335,12 +429,17 @@ export default function TranscriptionView(): React.JSX.Element {
                 </span>
               </span>
               <button
-                className="btn-primary shrink-0"
+                data-trans-organize="1"
+                className={
+                  detail.noteStatus === 'incomplete'
+                    ? 'shrink-0 cursor-pointer rounded-xl border border-amber-500/50 bg-amber-500/20 px-3 py-2 text-xs font-medium text-amber-200 transition hover:brightness-110 disabled:opacity-50'
+                    : 'btn-primary shrink-0'
+                }
                 onClick={startOrganize}
                 disabled={organizing || !currentText().trim() || enhancing}
               >
                 {organizing && <Spinner size={14} />}
-                {organizing ? t('trans.organizing') : t('trans.organize')}
+                {organizing ? t('trans.organizing') : detail.noteStatus === 'incomplete' ? t('trans.continueNote') : t('trans.organize')}
               </button>
             </div>
           </>
@@ -351,7 +450,12 @@ export default function TranscriptionView(): React.JSX.Element {
         <OrganizeDialog
           title={detail.title || detail.sourceName || t('trans.title')}
           sourceText={currentText()}
-          onClose={() => setShowOrg(false)}
+          transcriptId={detail.id}
+          onClose={() => {
+            setShowOrg(false)
+            void reload(true)
+            if (detail) void openDetail(detail.id)
+          }}
         />
       )}
     </div>

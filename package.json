@@ -1,8 +1,8 @@
 {
   "name": "whisper-notes",
   "productName": "WhisperNotes",
-  "version": "0.1.3",
-  "description": "课堂实时录音转写 + AI 笔记整理（Electron + whisper.cpp + OpenRouter）",
+  "version": "0.1.23",
+  "description": "课堂实时录音转写 + AI 笔记整理（Electron + whisper.cpp + 多渠道路由）",
   "main": "./out/main/index.js",
   "license": "Apache-2.0",
   "private": true,
@@ -19,19 +19,26 @@
     "fetch:win-ffmpeg": "bash scripts/fetch-win-ffmpeg.sh",
     "dist:mac": "electron-builder --mac --arm64",
     "dist:win": "electron-builder --win --x64",
-    "dist:win:full": "npm run fetch:win-ffmpeg && electron-builder --win --x64"
+    "dist:win:full": "npm run fetch:win-ffmpeg && electron-builder --win --x64",
+    "mobile:build": "npm --prefix mobile run build",
+    "mobile:apk": "npm --prefix mobile run android:apk",
+    "mobile:release": "npm --prefix mobile run android:release",
+    "sync:apk": "bash scripts/sync-apk.sh",
+    "predist:win": "npm run sync:apk"
   },
   "dependencies": {
     "better-sqlite3": "^13.0.3",
     "jszip": "^3.10.1",
     "pdf-parse": "^1.1.4",
-    "pdfjs-dist": "^3.11.174"
+    "pdfjs-dist": "^3.11.174",
+    "qrcode": "^1.5.4"
   },
   "devDependencies": {
     "@electron/rebuild": "^4.2.0",
     "@tailwindcss/vite": "^4.3.3",
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^26.0.0",
+    "@types/qrcode": "^1.5.5",
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",
     "@vitejs/plugin-react": "^5.2.0",

@@ -143,12 +143,22 @@ mark.hl-orange {
 .wn-fixed {
   table-layout: fixed;
 }
-/* 隐形边缘：整篇笔记内容与表格都在这条线上自动折行，不越界 */
+/* 折行策略：优先在空格/标点断行；一个单词塞不下时才断词（绝不逐字母竖排） */
 [contenteditable='true'] {
-  overflow-wrap: anywhere;
+  word-break: normal;
+  overflow-wrap: break-word;
+  line-break: normal;
 }
 table td,
 table th {
+  word-break: normal;
+  overflow-wrap: break-word;
+}
+/* 代码/超长 URL 才允许硬断 */
+pre,
+code,
+.break-hard {
+  word-break: break-all;
   overflow-wrap: anywhere;
 }
 table.wn-fixed td,

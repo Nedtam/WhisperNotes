@@ -42,6 +42,13 @@ It is deliberately narrow: transcription is local and always available, and the 
 - 📓 **Notes you actually own** — a local SQLite library with notebooks and sub-notebooks you can drag, reorder and nest; Markdown editor with highlights, tables and images; tags; full-text search; TOC jump; undo and draft recovery; one-click `.md` export.
 - 🗂 **Transcripts you can revisit** — every recording and import is archived. Weeks later you can polish it against the slides or organize it into a note without recording anything again.
 - 🔍 **Nothing hidden** — organizing runs as an inspectable background job: click the card for per-chunk progress, a live log, the exact upstream error, a retry button and a history of recent runs. Failures are diagnoses, not mysteries.
+- 🔁 **Self-healing organizing** — when an upstream rejects or rate-limits a request the job adapts by itself: smaller output budget → no token limit → **split the oversized input** → **backup models** → **another channel you configured**. If everything still refuses, the affected part keeps its raw transcript (clearly marked ⚠️) instead of failing the whole job. You get a note, not an error dialog.
+- 🔀 **Bring any AI channel** — OpenRouter (default, free models included), OpenAI, Gemini, Groq, Together, xAI, Mistral, DeepSeek, Moonshot/Kimi, Zhipu GLM, Qwen (DashScope), SiliconFlow, Volcengine Ark, MiniMax, plus **local Ollama / LM Studio** and any custom OpenAI-compatible Base URL. Add several, switch with one click, test connectivity, fetch the model list, and keep backup models per channel.
+- 🃏 **Flashcards from your notes** — AI pulls exam-worthy cards out of a note (importance ★1–5, kind, original quote), filters administrative noise out, and schedules them with SM-2 spaced repetition inside the app: due queue, grading, streak/accuracy stats, per-notebook scopes.
+- 📱 **Android review app** — a separate Capacitor client pairs with the desktop over your LAN by QR code, then works **fully offline**: browse notes/transcripts read-only, flip flashcards, grade them, and sync reviews back the next time you are on the same network. The APK is on the Releases page.
+- 📄 **Document → note** — a second, independent pipeline: drop a PDF/PPTX/DOCX/TXT/MD on the notes page and get a note made **only** from that document (key-points mode, optional `(p.12)` page citations, a dedicated prompt that never pretends a lecture happened). Scanned image-only PDFs are refused with a clear message instead of producing an empty note.
+- 🧠 **Resume-aware organizing (no more burning credit twice)** — every finished chunk is checkpointed locally. "Continue to note" reuses them and redoes **only** the parts that failed; a hard cap (45 requests per note) and a completeness floor (length + per-chunk coverage check on the final merge) keep long lectures both affordable and complete.
+- ✨ **AI-enhanced transcript** — polish a raw transcript against the slide deck with per-chunk progress, a cancel button, and the same retry/backup-model ladder as note generation.
 - 🌏 **Bilingual** — the whole interface (menus, errors, progress, even default note titles) ships in English and Simplified Chinese and switches instantly.
 
 ## Requirements
@@ -62,6 +69,9 @@ It is deliberately narrow: transcription is local and always available, and the 
 |---|---|
 | macOS (Apple Silicon) | `WhisperNotes-<version>-arm64.dmg` (recommended) or `-arm64-mac.zip` |
 | Windows (x64) | `WhisperNotes-<version>-win-x64.exe` (installer) or `-win-x64.zip` (portable) |
+| Android (review app, 8.0+) | `WhisperNotes-android.apk` — the phone only *reads* your library and reviews flashcards |
+
+Current version: **0.1.23** (desktop) / **0.1.2** (Android).
 
 **Option 2 — build it yourself** (`npm run dist:mac` / `npm run dist:win`): locally built apps carry no quarantine flag, so macOS opens them without any Gatekeeper dance. See [Packaging locally](#packaging-locally-no-ci-required).
 
@@ -126,7 +136,7 @@ mic / audio file
 ## Build from source
 
 ```bash
-git clone https://github.com/<you>/whisper-notes.git
+git clone https://github.com/Nedtam/WhisperNotes.git
 cd whisper-notes
 npm ci            # installs deps (better-sqlite3 ships N-API prebuilds — no native rebuild needed)
 npm run dev       # dev mode with HMR
@@ -148,6 +158,34 @@ cmake --build build -j
 ```
 
 `GGML_METAL_EMBED_LIBRARY=ON` embeds the Metal kernels as source, so **no Xcode / `xcrun metal` is needed** — the shaders compile once at runtime and are then cached by macOS.
+
+## Phone app (Android, review client)
+
+WhisperNotes for Android is a **read-only review client** — no recording, no on-device transcription. It connects to this computer over your local network and shows your notes and transcripts; editing stays on the desktop.
+
+**Pairing (no account, no cloud)**
+
+1. On the desktop: **Settings → Phone connection (LAN)** → turn it on.
+2. A QR code appears. On the phone (same Wi-Fi) scan it — the scan page also offers the APK download served straight from your computer.
+3. The phone gets a device token; you can revoke it any time from the same panel.
+
+Only a one-time 5-minute pairing code is exchanged in the clear; all data endpoints require the device token, live only on your LAN, and never touch a server. The phone app asks for `INTERNET` permission only — no microphone, no storage.
+
+**Flashcards** are built in (see above). The APK is signed with a local release key; the desktop serves it over the LAN from the same panel, and the GitHub Actions release workflow can also build and attach it when the keystore secrets are configured.
+
+**Flashcards** — pick a note (or "all notes without cards yet"), and the AI turns your organized notes into cards (density, focus and language are adjustable; ~5 cards per 1000 characters by default, max 20 per note). Cards live in the local library: edit, suspend or delete them, then review with spaced repetition (SM-2). Reviews are graded Again / Hard / Good / Easy and rescheduled from 1 day up to months; the desktop page shows due-today, accuracy (30 days) and a streak.
+
+The phone app is offline-first for reviewing: grade cards on the phone (SM-2 is computed locally with the exact same code as the desktop, `src/shared/srs.ts`), and the graded reviews are queued and pushed back to the computer as soon as you are on the same Wi-Fi again.
+
+**Phone app FAQ**
+
+| Symptom | What to do |
+|---|---|
+| “App not installed” when installing over an older build | You installed a **debug** APK before: uninstall the old app first (the signing key changed), then install the signed one. |
+| Phone cannot reach the computer | Both must be on the same Wi-Fi. Campus/corporate Wi-Fi often enables **client isolation** — use a phone hotspot or a home network. Also allow incoming connections if macOS asks. |
+| Worked yesterday, fails today | The computer's IP changed with the network. On the computer: Settings → Phone connection → **New pairing code**, then scan again. |
+| Lost/forgot a device | Settings → Phone connection → Disconnect next to the device (or Disconnect all). The token stops working immediately. |
+| Need to rebuild the APK | Keep `~/.whispernotes/android-release.jks` and `mobile/android/keystore.properties` safe. Lose the keystore and you cannot update an installed app — users would have to uninstall first. |
 
 ## Packaging locally (no CI required)
 
@@ -174,8 +212,8 @@ CI is **optional** — you can publish by uploading the files from [Packaging lo
 
 ```bash
 # bump "version" in package.json, then:
-git commit -am "release: 0.1.4"
-git tag v0.1.4
+git commit -am "release: 0.1.15"
+git tag v0.1.15
 git push origin main --tags      # CI builds and publishes
 ```
 
@@ -198,6 +236,9 @@ Without those secrets CI falls back to **ad-hoc deep signing** (`scripts/sign-ad
 | **Max chunk size (chars)** | How much transcript goes into one request (long text is split, then merged). |
 | **Note length** | Shapes the prompt. *Detailed* asks the model to keep every fact (no compression) — pair it with a larger output budget. |
 | **Threads** | CPU threads for the engine; barely matters when running on the GPU. |
+| **AI channels** | Add as many as you like (Settings → AI). The ✓ marks the active one; each keeps its own Key, model and backup models. Local models (Ollama/LM Studio) need no Key and are never quota-limited. |
+| **Auto-switch model / channel** | On by default. Turn it off if you prefer a hard failure over a fallback. |
+| **Free quota** | Only free models count against it (OpenRouter names ending in `:free`). Your own paid keys and local models are not limited. |
 
 **Want longer, more complete notes?** Use *Detailed* + 32k (or 64k) and attach the slides if you have them. Example from a real 84 k-character lecture transcript: default settings produced a truncated ≈21 k-character note, while *Detailed + 32k* produced a complete ≈37.5 k-character note.
 
@@ -226,10 +267,10 @@ Without those secrets CI falls back to **ad-hoc deep signing** (`scripts/sign-ad
 
 - [ ] Intel Mac (x64) build of the bundled engine
 - [ ] Windows arm64 package
+- [ ] OCR for scanned / image-only PDFs (doc → note)
 - [ ] Re-transcribe an archived recording with a different model/language
 - [ ] Global hotkey / menu-bar recorder
 - [ ] Optional faster-whisper backend behind the same `AsrEngine` interface
-- [ ] Per-notebook ordering & study aids (flashcards from notes)
 
 ## License & credits
 
@@ -263,6 +304,13 @@ Bundled third-party components:
 - 📓 **笔记真正属于你**——本地 SQLite 笔记库，笔记本与子笔记本可拖拽、排序、嵌套；Markdown 编辑器支持高亮/表格/图片；标签、全文搜索、目录跳转、撤销与草稿恢复、一键导出 `.md`。
 - 🗂 **转写可回炉**——每次录音/导入都归档；过几周还能对照课件精修，或直接整理成笔记，无需重新录音转写。
 - 🔍 **进度看得见**——整理是后台任务：点开卡片能看到分块进度、实时日志、上游原始报错、重试按钮和最近历史。失败是"可诊断"，不是"没反应"。
+- 🔁 **会自愈的整理**——上游拒绝或限流时任务自己降级：缩小输出预算 → 不限制输出 → **自动拆分过大的输入** → **自动改用备用模型** → **自动换到你配置的其它渠道**。全都拒绝时，受影响的段落保留原文并标 ⚠️，而不是整单失败。你拿到的是笔记，不是报错弹窗。
+- 🃏 **从笔记出闪卡**——AI 从笔记里挑"会考的东西"出卡（重要度 ★1–5、题型、原文引用），自动过滤通知类水话，用 SM-2 间隔重复在本机复习：待复习队列、四档评分、连续天数/正确率、按笔记本/笔记圈范围。
+- 📱 **安卓复习端**——独立的 Capacitor 客户端，扫码用局域网和电脑配对，之后**完全离线**可用：只读浏览笔记/转写、就地翻卡评分，下次同网再回传复习记录。安装包在 Releases 页。
+- 📄 **文档转笔记**——第二条独立管线：在笔记页拖入 PDF/PPTX/DOCX/TXT/MD，只根据该文档生成笔记（要点式、可标 `(p.12)` 页码、专用提示词，不会假装有录音）。扫描版纯图片 PDF 会明确提示不支持，而不是给你一篇空笔记。
+- 🧠 **断点续做，不再重复烧额度**——每段整理成功就落盘；点「继续转成笔记」只重做失败的那几段，已完成的直接复用。单篇 45 次请求上限 + 完成度地板（长度比例 + 逐块留痕检查）让长讲座既省额度又保证完整。
+- ✨ **AI 增强版转写**——对照课件润色原始转写，带分块进度、可取消，和整理共用同一套重试/备用模型降级。
+- 🔀 **任意 AI 渠道**——OpenRouter（默认，含免费模型）、OpenAI、Gemini、Groq、Together、xAI、Mistral、DeepSeek、Moonshot/Kimi、智谱 GLM、通义千问、SiliconFlow、火山方舟、MiniMax，还有**本地 Ollama / LM Studio** 与任意自定义 OpenAI 兼容 Base URL。可加多个、一键切换、测连通性、拉模型列表、每个渠道配备用模型。
 - 🌏 **中英双语**——界面、报错、进度、默认标题全部双语，切换即时生效。
 
 ## 环境要求
@@ -283,6 +331,9 @@ Bundled third-party components:
 |---|---|
 | macOS（Apple Silicon） | `WhisperNotes-<版本>-arm64.dmg`（推荐）或 `-arm64-mac.zip` |
 | Windows（x64） | `WhisperNotes-<版本>-win-x64.exe`（安装包）或 `-win-x64.zip`（免安装） |
+| Android（复习端，8.0+） | `WhisperNotes-android.apk`——手机只**读**文库并复习闪卡 |
+
+当前版本：桌面 **0.1.23** / 安卓 **0.1.2**。
 
 **方式二：自己打包**（`npm run dist:mac` / `npm run dist:win`）——本地构建的 app 没有隔离标记，macOS 上双击即开，见[本地打包](#本地打包不需要-ci)。
 
@@ -347,7 +398,7 @@ Bundled third-party components:
 ## 从源码运行
 
 ```bash
-git clone https://github.com/<你的用户名>/whisper-notes.git
+git clone https://github.com/Nedtam/WhisperNotes.git
 cd whisper-notes
 npm ci            # 安装依赖（better-sqlite3 自带 N-API 预编译，无需重编）
 npm run dev       # 开发模式（热更新）
@@ -369,6 +420,34 @@ cmake --build build -j
 ```
 
 `GGML_METAL_EMBED_LIBRARY=ON` 把 Metal 着色器以源码形式嵌进二进制，**不需要装 Xcode**（运行时编译一次，之后由系统缓存）。
+
+## 手机端（Android，复习客户端）
+
+WhisperNotes 的 Android 版是一个**只读复习客户端**——不做录音、不做端上转写。它通过局域网连到这台电脑，浏览你的笔记与转写；编辑仍然只在电脑上。
+
+**配对（不需要账号，不上云）**
+
+1. 电脑端：**设置 → 手机连接（局域网）** → 打开开关。
+2. 出现二维码。手机（同一 Wi-Fi）扫码即可；扫码页同时提供安装包下载，安装包由你的电脑直接提供。
+3. 手机会拿到一个设备令牌，随时可以在同一个面板里断开。
+
+明文传输的只有那个 5 分钟一次性配对码；所有数据接口都需要设备令牌，只在局域网内存活，不经过任何服务器。手机端只申请 `INTERNET` 权限——没有麦克风、没有存储权限。
+
+**闪卡已内置**（见上）。APK 用本地 release 密钥签名；电脑端在同一个面板里通过局域网直传安装包，配置好 keystore secrets 后 GitHub Actions 也能自动构建并附到 Release。
+
+**闪卡**——选一篇笔记（或「所有还没出卡的笔记」），AI 把它变成卡片（密度、侧重、语言可调；默认每 1000 字约 5 张、单篇最多 20 张）。卡片存在本地库：可编辑、暂停、删除，然后用间隔重复（SM-2）复习。评分四档：忘了 / 有点难 / 记得 / 太简单，间隔从 1 天逐步拉长到数月；电脑端页面显示今日待复习、30 天正确率与连续天数。
+
+手机端的复习是**离线优先**的：评分时用与电脑端完全相同的那份算法（`src/shared/srs.ts`）在本地算排程，复习记录先入队，一旦回到同一 Wi-Fi 就自动回传电脑端。
+
+**手机端常见问题**
+
+| 现象 | 处理 |
+|---|---|
+| 覆盖安装时报「应用未安装」 | 你之前装的是 **debug** 包：先卸载旧 App（签名换了），再装签名版。 |
+| 手机连不上电脑 | 必须在同一 Wi-Fi。校园网/公司网常开**客户端隔离**，改用手机热点或家里的网；macOS 若弹「允许传入连接」请允许。 |
+| 昨天能用今天不行 | 电脑换了网络，IP 变了。到电脑上「设置 → 手机连接 → **换一个配对码**」重新扫码。 |
+| 设备丢了/想取消授权 | 设置 → 手机连接 → 对应设备「断开」（或「全部断开」），令牌立即失效。 |
+| 以后要重新构建 APK | 保管好 `~/.whispernotes/android-release.jks` 与 `mobile/android/keystore.properties`。密钥丢了就没法覆盖安装更新，只能让用户先卸载。 |
 
 ## 本地打包（不需要 CI）
 
@@ -394,8 +473,8 @@ CI 是**可选**的——你也可以直接把[本地打包](#本地打包不需
 
 ```bash
 # 先改 package.json 里的 version，然后
-git commit -am "release: 0.1.4"
-git tag v0.1.4
+git commit -am "release: 0.1.15"
+git tag v0.1.15
 git push origin main --tags      # CI 自动构建并发布
 ```
 
@@ -418,6 +497,9 @@ git push origin main --tags      # CI 自动构建并发布
 | **单块文本上限（字符）** | 每个请求的转写量；超长自动分块再合并。 |
 | **笔记长度** | 影响提示词；"详细"要求尽量不压缩，建议搭配更大的输出上限。 |
 | **线程数** | 引擎的 CPU 线程数；走 GPU 时几乎无影响。 |
+| **AI 渠道** | 设置 → AI 里可加任意多个渠道，✓ 表示当前使用；每个渠道独立保存 Key、模型和备用模型。本地模型（Ollama/LM Studio）不需要 Key，也不占额度。 |
+| **失败时自动换模型 / 换渠道** | 默认开启；关掉就是"失败即失败"，不做任何降级。 |
+| **免费额度** | 只统计免费模型（OpenRouter 里以 `:free` 结尾的）。自己的付费 Key 和本地模型不受限制。 |
 
 **想要更长更完整的笔记？** 选「详细」+ 32k（或 64k），有课件就挂上。实测同一份 84k 字符的讲座转写：默认设置得到约 21k 字符且**结尾被截断**的笔记；「详细 + 32k」得到约 **37.5k 字符、完整收尾**的笔记。
 

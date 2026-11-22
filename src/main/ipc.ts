@@ -1,5 +1,10 @@
 // IPC：注册所有主进程可调用通道与上行事件
-import { BrowserWindow, clipboard, dialog, ipcMain, shell } from 'electron'
+import {
+  BrowserWindow,
+  clipboard,
+  dialog,
+  ipcMain,
+  shell } from 'electron'
 import type {
   AppSettings,
   DailyUsage,
@@ -7,10 +12,16 @@ import type {
   NoteDraft,
   NoteRecord,
   OrganizeRequest,
-  OrganizeResult
+  OrganizeResult,
+  CardGenRequest,
+  Card as CardRecord
 } from '@shared/types'
-import { loadConfig, saveConfig, getDailyUsage, resetDailyUsage } from './config'
-import { i18nCode, tm } from './i18n'
+import { loadConfig,
+  saveConfig,
+  getDailyUsage,
+  resetDailyUsage } from './config'
+import { i18nCode,
+  tm } from './i18n'
 import { clip } from './llm/openrouter'
 import { orgLog } from './orgLog'
 import {
@@ -30,15 +41,24 @@ import {
   listTranscriptions,
   getTranscription,
   saveTranscription,
-  deleteTranscription
+  getOrgParts,
+  putOrgPart,
+  pruneOrgParts,
+  clearOrgParts,
+  deleteTranscription,
+  setTranscriptionNote
 } from './db'
 import { MODEL_CATALOG, localizeModel } from './modelCatalog'
 import { downloadFile } from './download'
-import { organizeText } from './llm/organize'
+import { organizeText, partHashOf, organizeFingerprint, docHashOf, type OrganizeCheckpoint } from './llm/organize'
 import { polishText } from './llm/polish'
-import { validateKey } from './llm/openrouter'
+import { validateKey, testChannel, listChannelModels } from './llm/openrouter'
+import type { MobileServer } from './mobile/server'
+import { countCardsForNote, deleteCard, deleteCardsForNote, listCardFronts, listCards, saveCard, cardStats, reviewCard } from './db'
+import { generateCardsForNote, draftToCard } from './llm/cards'
 import { probeBinary } from './whisperServer'
 import { decodeTo16kWavFile } from './decodeAudio'
+import { DOC_EXTENSIONS, isDocPath, parseDocument, docToPromptText, type ParsedDoc } from './docparse'
 import { parseDeckCached, fitSlidesList } from './slides'
 import { buildAsrPrompt, buildDictTerms } from './course'
 import type { AsrManager } from './asrManager'
@@ -51,6 +71,8 @@ export interface IpcContext {
   asr: AsrManager
   modelsDir: string
   openChildWindow?: (id: string) => void
+  /** 局域网手机连接服务（阶段 2） */
+  mobile: MobileServer
 }
 
 let ctxRef: IpcContext | null = null
@@ -151,6 +173,193 @@ export function registerIpc(ctx: IpcContext): void {
 
   // ── 设置 ────────────────────────────────────────────
   ipcMain.handle('settings:get', () => currentSettings())
+
+  /** 转写 → 笔记 状态回填（前端保存笔记后调用） */
+  ipcMain.handle('trans:setNoteStatus', (_e, id: string, status: 'none' | 'ok' | 'incomplete', error?: string, noteId?: string) =>
+    setTranscriptionNote(String(id), status, error ?? null, noteId ?? null)
+  )
+
+  /** 未完成的整理：返回该转写的原文，供"继续转成笔记"复用 */
+  ipcMain.handle('trans:get', (_e, id: string) => getTranscription(String(id)))
+
+  // ── 闪卡（AI 从整理好的笔记出卡 + 间隔重复） ──────────────
+  interface CardJob {
+    jobId: string
+    req: CardGenRequest
+    canceled: boolean
+    ctrl: AbortController
+    /** 断点续跑：已处理的笔记 id */
+    done: string[]
+  }
+  const cardJobs = new Map<string, CardJob>()
+  let cardJobSeq: Promise<void> = Promise.resolve()
+
+  /** 解析目标笔记：单篇 / 整本笔记本（含子笔记本） */
+  const resolveCardNotes = (req: CardGenRequest): NoteRecord[] => {
+    const all = listNotes()
+    if (req.noteIds?.length) {
+      const want = new Set(req.noteIds)
+      return all.filter((n) => want.has(n.id))
+    }
+    if (req.noteId) {
+      const n = all.find((x) => x.id === req.noteId)
+      return n ? [n] : []
+    }
+    if (req.notebookId) {
+      const ids = new Set<string>([req.notebookId])
+      const bks = listNotebooks()
+      let grew = true
+      while (grew) {
+        grew = false
+        for (const b of bks) {
+          if (b.parentId && ids.has(b.parentId) && !ids.has(b.id)) {
+            ids.add(b.id)
+            grew = true
+          }
+        }
+      }
+      return all.filter((n) => n.notebookId && ids.has(n.notebookId))
+    }
+    // 都没给：所有还没有卡片的笔记
+    return all.filter((n) => countCardsForNote(n.id) === 0)
+  }
+
+  const runCardJob = async (job: CardJob): Promise<void> => {
+    const { req, jobId } = job
+    const notes = resolveCardNotes(req)
+    const todo = notes.filter((n) => (n.noteMd ?? '').trim().length > 0 && !job.done.includes(n.id) && !job.canceled)
+    let saved = 0
+    let failed = 0
+    let requests = 0
+    emit('cards:progress', { jobId, stage: 'plan', n: todo.length, detail: tm('cards.plan', { n: todo.length }) })
+    for (let i = 0; i < todo.length; i++) {
+      if (job.canceled) break
+      const n = todo[i]
+      emit('cards:progress', { jobId, stage: 'note', i: i + 1, n: todo.length, title: n.title, detail: tm('cards.noteOf', { i: i + 1, n: todo.length }) })
+      try {
+        const existing = listCardFronts(n.id)
+        const r = await generateCardsForNote(
+          currentSettings(),
+          { id: n.id, title: n.title, noteMd: n.noteMd ?? '', notebookId: n.notebookId ?? null, tags: n.tags },
+          req,
+          existing,
+          job.ctrl.signal,
+          undefined,
+          (detail) => emit('cards:progress', { jobId, stage: 'note', i: i + 1, n: todo.length, title: n.title, detail })
+        )
+        requests += r.requests
+        for (const d of r.cards) saveCard(draftToCard(d, { id: n.id, title: n.title, noteMd: n.noteMd ?? '', notebookId: n.notebookId ?? null, tags: n.tags }))
+        saved += r.cards.length
+        job.done.push(n.id)
+        emit('cards:progress', { jobId, stage: 'save', i: i + 1, n: todo.length, title: n.title, cards: saved, detail: tm('cards.savedSoFar', { n: r.cards.length, total: saved }) })
+      } catch (e) {
+        if (job.canceled) break
+        failed += 1
+        const msg = (e as Error).message || String(e)
+        orgLog(`[cards ${jobId.slice(0, 8)}] note=${n.id} failed: ${msg}`)
+        emit('cards:progress', { jobId, stage: 'note', i: i + 1, n: todo.length, title: n.title, detail: localizeError(msg) })
+      }
+    }
+    const canceled = job.canceled
+    cardJobs.delete(jobId)
+    emit('cards:done', {
+      jobId,
+      cards: saved,
+      notes: job.done.length,
+      failed,
+      requests,
+      canceled,
+      error: failed && !saved ? i18nCode('cards.allFailed', { n: failed }) : undefined
+    })
+    orgLog(`[cards ${jobId.slice(0, 8)}] done cards=${saved} notes=${job.done.length} failed=${failed} requests=${requests} canceled=${canceled}`)
+  }
+
+  ipcMain.handle('cards:generate', (_e, req: CardGenRequest): { ok: boolean; jobId?: string; error?: string } => {
+    const notes = resolveCardNotes(req ?? {})
+    if (!notes.length) return { ok: false, error: i18nCode('cards.noNotes') }
+    const jobId = randomUUID()
+    const job: CardJob = { jobId, req: { ...req }, canceled: false, ctrl: new AbortController(), done: [] }
+    cardJobs.set(jobId, job)
+    orgLog(`[cards ${jobId.slice(0, 8)}] queued notes=${notes.length} style=${req?.style ?? 'balanced'}`)
+    // 串行执行（与整理错开，避免同时打满上游）
+    cardJobSeq = cardJobSeq.then(() => runCardJob(job)).catch(() => {})
+    return { ok: true, jobId }
+  })
+
+  ipcMain.handle('cards:cancel', (_e, jobId: string): boolean => {
+    const job = cardJobs.get(jobId)
+    if (!job) return false
+    job.canceled = true
+    try {
+      job.ctrl.abort()
+    } catch {
+      /* ignore */
+    }
+    return true
+  })
+
+  ipcMain.handle('cards:list', (_e, filter?: { noteId?: string; notebookId?: string; due?: boolean; includeSuspended?: boolean }) =>
+    listCards(filter ?? {})
+  )
+
+  ipcMain.handle('cards:stats', () => cardStats())
+
+  ipcMain.handle('cards:update', (_e, id: string, patch: Partial<CardRecord>) => {
+    const cur = listCards({ includeSuspended: true }).find((c) => c.id === id)
+    if (!cur) return null
+    return saveCard({
+      id,
+      front: patch.front ?? cur.front,
+      back: patch.back ?? cur.back,
+      hint: patch.hint ?? cur.hint,
+      tags: patch.tags ?? cur.tags,
+      source: patch.source ?? cur.source,
+      suspended: patch.suspended ?? cur.suspended
+    })
+  })
+
+  ipcMain.handle('cards:remove', (_e, id: string): boolean => deleteCard(String(id)))
+
+  ipcMain.handle('cards:removeForNote', (_e, noteId: string): number => deleteCardsForNote(String(noteId)))
+
+  ipcMain.handle('cards:review', (_e, id: string, grade: number, ms?: number) => reviewCard(String(id), Number(grade), ms, 'desktop'))
+
+  // ── 手机连接（局域网只读） ──────────────────────────────
+  ipcMain.handle('mobile:status', () => ctx.mobile.status())
+
+  ipcMain.handle('mobile:setEnabled', async (_e, enabled: boolean) => {
+    const cur = currentSettings()
+    saveConfig({ mobile: { ...(cur.mobile ?? {}), enabled: !!enabled } })
+    if (enabled) {
+      const r = await ctx.mobile.start(cur.mobile?.port ?? 0)
+      if (!r.ok) throw new Error(i18nCode('mobile.startFail', { msg: r.error ?? '' }))
+      // 端口是随机挑的：记下来，下次保持同一端口（手机端缓存的地址不会失效）
+      if (r.port && r.port !== cur.mobile?.port) {
+        const now = currentSettings()
+        saveConfig({ mobile: { ...(now.mobile ?? {}), port: r.port } })
+      }
+    } else {
+      ctx.mobile.stop()
+    }
+    ctx.asr.settingsSnapshot = currentSettings()
+    return ctx.mobile.status()
+  })
+
+  ipcMain.handle('mobile:qr', async () => {
+    const r = await ctx.mobile.qrPayload()
+    if ('error' in r) return { ok: false, error: i18nCode(r.error === 'no-lan' ? 'mobile.noLan' : 'mobile.startFail', { msg: '' }) }
+    return { ok: true, svg: r.svg, url: r.url, code: r.code }
+  })
+
+  ipcMain.handle('mobile:revoke', (_e, id: string) => {
+    ctx.mobile.revoke(String(id))
+    return ctx.mobile.status()
+  })
+
+  ipcMain.handle('mobile:revokeAll', () => {
+    ctx.mobile.revokeAll()
+    return ctx.mobile.status()
+  })
 
   ipcMain.handle('settings:set', (_e, patch: Partial<AppSettings>) => {
     const next = saveConfig(patch ?? {})
@@ -319,6 +528,20 @@ export function registerIpc(ctx: IpcContext): void {
     return filePath
   })
 
+  /** 把主进程抛出的 @key|vars 错误码翻成当前语言（进度里给人看） */
+  const localizeError = (msg: string): string => {
+    const m = /^@([a-zA-Z0-9_.]+)(?:\|(.*))?$/.exec(msg || '')
+    if (!m) return msg
+    const vars: Record<string, string> = {}
+    if (m[2]) {
+      for (const kv of m[2].split('&')) {
+        const i = kv.indexOf('=')
+        if (i > 0) vars[kv.slice(0, i)] = decodeURIComponent(kv.slice(i + 1))
+      }
+    }
+    return tm(m[1], vars)
+  }
+
   // ── LLM 整理 ────────────────────────────────────────
   const orgCtl = new Map<string, { ctrl: AbortController; startedAt: number }>()
   /** 中止原因：区分「用户取消」与「看门狗自动中止」，避免把自动中止误报成取消 */
@@ -344,9 +567,10 @@ export function registerIpc(ctx: IpcContext): void {
       orgLog(`[${job.jobId.slice(0, 8)}] ${line}`)
     }
     // 看门狗：长时间没有任何进展（含 120s 请求超时 + 合并阶段）就中止，避免“永远挂着没动静”
-    const onActivity = (phase: 'start' | 'end'): void => {
+    const onActivity = (phase: 'start' | 'end' | 'tick'): void => {
       if (phase === 'start') inFlight += 1
-      else inFlight = Math.max(0, inFlight - 1)
+      else if (phase === 'end') inFlight = Math.max(0, inFlight - 1)
+      // tick：流式每收到一段数据就续命（慢模型长时间生成不会被误判卡死）
       lastBeat = Date.now()
     }
     const watchdog = setInterval(() => {
@@ -387,24 +611,68 @@ export function registerIpc(ctx: IpcContext): void {
         }
         progress(p)
       }
+      // 断点续做：同一篇转写 + 同样的组织参数 → 上次已成功的段落直接复用（0 请求），
+      // 只重做失败/没做过的段落。用户点「继续转成笔记」时不再整篇重来。
+      const settingsNow = currentSettings()
+      const docHash = docHashOf(req.sourceText)
+      const fp = organizeFingerprint({
+        modelId: settingsNow.llm.modelId,
+        templateId: req.templateId ?? settingsNow.llm.templateId,
+        length: req.length,
+        sourceText: req.sourceText,
+        slidesText
+      })
+      const cached = getOrgParts(docHash, fp)
+      if (cached.size) beat(`resume: ${cached.size} cached part(s) available`)
+      const checkpoint: OrganizeCheckpoint = {
+        load: (h) => cached.get(h),
+        save: (h, md, status) => {
+          putOrgPart(docHash, h, fp, md, status)
+          cached.set(h, { partHash: h, md, status })
+        }
+      }
       const res = await organizeText(
-        currentSettings(),
+        settingsNow,
         {
           title: req.title,
           sourceText: req.sourceText,
           templateId: req.templateId,
           length: req.length,
-          slidesText
+          slidesText,
+          source: req.source === 'document' ? 'document' : 'transcript'
         },
         wrappedProgress,
         ctrl.signal,
-        onActivity
+        onActivity,
+        checkpoint
       )
-      beat(`done requests=${res.requests} chunks=${res.chunks} noteChars=${res.noteMd.length}`)
+      try {
+        pruneOrgParts(30)
+      } catch {
+        /* ignore */
+      }
+      const degraded = !!res.degraded
+      // 只有"确实缺段落"才算未完成；合并退化为本地拼接时内容仍在，照常入库（只加警告横幅）
+      const incomplete = (res.failedParts ?? 0) > 0
+      beat(
+        `done requests=${res.requests} chunks=${res.chunks} noteChars=${res.noteMd.length} degraded=${degraded}` +
+          (degraded ? ` failedParts=${res.failedParts ?? 0}` : '')
+      )
+      // 不完成就不进笔记库：有段落只能保留原文时，标记转写为"未完成"，由用户在转写页决定是否继续
+      if (incomplete && req.transcriptId) {
+        setTranscriptionNote(req.transcriptId, 'incomplete', i18nCode('trans.noteIncompleteReason', { n: res.failedParts ?? 0 }), null)
+      }
+      if (!incomplete && req.transcriptId && job.mode === 'new') {
+        // 成功建立笔记时先记下"进行中"，等前端保存后回填 noteId（前端会再调用一次标记）
+        setTranscriptionNote(req.transcriptId, 'ok', null, null)
+      }
       emit('llm:jobDone', {
         jobId: job.jobId,
         mode: job.mode,
         replaceId: job.replaceId,
+        transcriptId: req.transcriptId,
+        // 文档笔记：前端据此把 kind='doc' 落库（笔记列表会显示 📄）
+        kind: req.kind ?? (req.source === 'document' ? 'doc' : 'lecture'),
         title: req.title,
         noteMd: res.noteMd,
         sourceText: req.sourceText,
@@ -413,7 +681,11 @@ export function registerIpc(ctx: IpcContext): void {
         requests: res.requests,
         chunks: res.chunks,
         truncated: res.truncated,
-        continuations: res.continuations
+        continuations: res.continuations,
+        degraded,
+        degradedReason: degraded ? i18nCode('trans.noteIncompleteReason', { n: res.failedParts ?? 0 }) : undefined,
+        incomplete,
+        failedParts: res.failedParts ?? 0
       })
     } catch (e) {
       // 区分三种收尾：用户取消 / 看门狗自动中止 / 真实错误
@@ -427,6 +699,7 @@ export function registerIpc(ctx: IpcContext): void {
           : (e as Error).message
       const raw = (e as { raw?: string }).raw
       beat(`error byUser=${byUser} stalled=${stalled} ${clip(msg)}${raw ? ` raw=${clip(raw, 1500)}` : ''}`)
+      if (!byUser && req.transcriptId) setTranscriptionNote(req.transcriptId, 'incomplete', msg, null)
       emit('llm:jobError', { jobId: job.jobId, error: msg, canceled: byUser })
     } finally {
       clearInterval(watchdog)
@@ -481,6 +754,12 @@ export function registerIpc(ctx: IpcContext): void {
     return false
   })
 
+  // 「彻底重转」：清掉这篇转写的断点缓存，下次整理会重新做每一段
+  ipcMain.handle('trans:clearCheckpoint', (_e, sourceText: string): boolean => {
+    if (typeof sourceText !== 'string' || !sourceText.trim()) return false
+    return clearOrgParts(docHashOf(sourceText)) >= 0
+  })
+
   // 兼容旧调用：同步等待一次整理
   ipcMain.handle('llm:organize', async (_e, req: OrganizeRequest): Promise<OrganizeResult> => {
     if (!req || typeof req.sourceText !== 'string' || !req.sourceText.trim()) {
@@ -489,7 +768,14 @@ export function registerIpc(ctx: IpcContext): void {
     const slidesText = await deckContext(req)
     return organizeText(
       currentSettings(),
-      { title: req.title, sourceText: req.sourceText, templateId: req.templateId, length: req.length, slidesText },
+      {
+        title: req.title,
+        sourceText: req.sourceText,
+        templateId: req.templateId,
+        length: req.length,
+        slidesText,
+        source: req.source === 'document' ? 'document' : 'transcript'
+      },
       (p) => emit('llm:progress', p)
     )
   })
@@ -538,6 +824,32 @@ export function registerIpc(ctx: IpcContext): void {
     }
   })
 
+  // ── 文档 → 笔记（笔记页用；与语音/转写完全无关）───────────────
+  ipcMain.handle('doc:pick', async (): Promise<{ path: string; fileName: string } | null> => {
+    const win = ctx.getWindow()
+    if (!win) return null
+    const { canceled, filePaths } = await dialog.showOpenDialog(win, {
+      title: tm('doc.pickTitle'),
+      properties: ['openFile'],
+      filters: [
+        { name: tm('doc.filterAll'), extensions: DOC_EXTENSIONS.map((e) => e.replace('.', '')) },
+        { name: 'PDF', extensions: ['pdf'] },
+        { name: 'PowerPoint', extensions: ['pptx'] },
+        { name: 'Word', extensions: ['docx'] },
+        { name: 'Text / Markdown', extensions: ['txt', 'md', 'markdown'] }
+      ]
+    })
+    if (canceled || !filePaths[0]) return null
+    return { path: filePaths[0], fileName: path.basename(filePaths[0]) }
+  })
+
+  /** 解析文档：返回按页文本 + 字符数（加密 PDF 会回 passwordNeeded） */
+  ipcMain.handle('doc:parse', async (_e, filePath: string, password = ''): Promise<ParsedDoc> => {
+    if (typeof filePath !== 'string' || !filePath.trim()) throw new Error(i18nCode('err.badParam'))
+    if (!isDocPath(filePath)) throw new Error(i18nCode('err.docUnsupported'))
+    return await parseDocument(filePath, password)
+  })
+
   ipcMain.handle('slides:parse', async (_e, filePath: string): Promise<import('@shared/types').DeckDescriptor> => {
     if (typeof filePath !== 'string') throw new Error(i18nCode('err.badParam'))
     try {
@@ -576,28 +888,56 @@ export function registerIpc(ctx: IpcContext): void {
     }
   )
 
+  let polishCtl: AbortController | null = null
   ipcMain.handle('llm:polish', async (_e, req: import('@shared/types').PolishRequest) => {
     if (organizeBusy) throw new Error(i18nCode('err.orgBusy'))
     if (!req || typeof req.sourceText !== 'string' || !req.sourceText.trim()) {
       throw new Error(i18nCode('pol.noText'))
     }
     organizeBusy = true
+    polishCtl = new AbortController()
     try {
       const slidesContext = await deckContext(req)
       const out = await polishText(
         currentSettings(),
         { sourceText: req.sourceText, slidesContext },
-        (p) => emit('llm:progress', p)
+        (p) => emit('llm:progress', p),
+        polishCtl.signal
       )
       return { text: out.text, requests: out.requests, chunks: out.chunks }
     } finally {
       organizeBusy = false
+      polishCtl = null
     }
+  })
+  // 取消"生成增强版"（长转写要跑几分钟，用户得能停）
+  ipcMain.handle('llm:polishCancel', () => {
+    try {
+      polishCtl?.abort()
+    } catch {
+      /* ignore */
+    }
+    return true
   })
 
   ipcMain.handle('llm:validate', async () => {
     const r = await validateKey(currentSettings())
     return r.ok ? { ok: true } : { ok: false, error: r.error }
+  })
+
+  // 指定渠道（可未保存）连通性测试
+  ipcMain.handle(
+    'llm:testChannel',
+    async (_e, ch: { baseUrl: string; apiKey: string; modelId: string; local?: boolean }) => {
+      if (!ch?.baseUrl || !ch?.modelId) return { ok: false, error: i18nCode('err.channelIncomplete') }
+      return testChannel(currentSettings(), ch)
+    }
+  )
+
+  // 渠道模型列表
+  ipcMain.handle('llm:listModels', async (_e, ch: { baseUrl: string; apiKey: string }) => {
+    if (!ch?.baseUrl) return { ok: false, models: [], error: i18nCode('err.channelIncomplete') }
+    return listChannelModels(ch)
   })
 
   // ── 模型 ────────────────────────────────────────────

@@ -114,7 +114,7 @@ export function applyToolbarAction(ta: HTMLTextAreaElement, action: MarkdownActi
     case 'link':
       return wrapSelection(ta, '[', '](https://)', t('ed.link'))!
     case 'hl-yellow':
-      return wrapSelection(ta, '==', '==', t('ed.highlight'))!
+      return wrapSelection(ta, '<mark class="hl-yellow">', '</mark>', t('ed.highlight'))!
     case 'hl-green':
       return wrapSelection(ta, '<mark class="hl-green">', '</mark>', t('ed.highlight'))!
     case 'hl-pink':

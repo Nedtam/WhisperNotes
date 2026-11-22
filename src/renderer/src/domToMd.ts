@@ -34,7 +34,9 @@ function inlineChildren(el: Element): string {
     }
     if (tag === 'MARK') {
       const cls = c.getAttribute('class') ?? ''
-      if (cls.includes('hl-yellow')) out += '==' + inlineChildren(c) + '=='
+      // 黄色荧光统一写成 HTML（旧笔记里的 ==…== 仍兼容渲染，但新内容不再产生 ==，
+      // 避免代码里的 == 与荧光语法互相打架）
+      if (cls.includes('hl-yellow')) out += '<mark class="hl-yellow">' + inlineChildren(c) + '</mark>'
       else if (cls.includes('hl-green')) out += '<mark class="hl-green">' + inlineChildren(c) + '</mark>'
       else if (cls.includes('hl-pink')) out += '<mark class="hl-pink">' + inlineChildren(c) + '</mark>'
       else if (cls.includes('hl-blue')) out += '<mark class="hl-blue">' + inlineChildren(c) + '</mark>'
@@ -159,9 +161,13 @@ function blockLines(el: Element, depth = 0): string[] {
     const pad = (r: string[]): string[] => [...r, ...Array(Math.max(0, ncol - r.length)).fill('')]
     // 读回列宽 / 行高（编辑器拖拽产生）→ 写进 <!--wn:...-->，下次打开仍保持
     const colEls = Array.from(el.querySelectorAll(':scope > colgroup > col'))
-    const widths = colEls
-      .map((c) => parseInt((c.getAttribute('style') || '').replace(/.*width:\s*(\d+)px.*/, '$1'), 10))
-      .filter((n) => !Number.isNaN(n) && n > 0)
+    // 注意：拖拽产生的宽度带小数（272.695px），旧正则 /(\d+)px/ 匹配不到 → NaN → 尺寸丢失。
+    // 这里统一容忍小数并四舍五入成整数像素。
+    const px = (style: string, prop: 'width' | 'height'): number => {
+      const m = new RegExp(`${prop}:\\s*([\\d.]+)px`).exec(style || '')
+      return m ? Math.round(parseFloat(m[1])) : 0
+    }
+    const widths = colEls.map((c) => px(c.getAttribute('style') || '', 'width')).filter((n) => n > 0)
     const allTrs: HTMLElement[] = []
     if (thead?.querySelector('tr')) allTrs.push(thead.querySelector('tr') as HTMLElement)
     tbody?.querySelectorAll(':scope > tr').forEach((tr) => allTrs.push(tr as HTMLElement))
@@ -169,8 +175,7 @@ function blockLines(el: Element, depth = 0): string[] {
       .map((tr) => {
         const first = tr.querySelector(':scope > th, :scope > td') as HTMLElement | null
         if (!first) return 0
-        const m = (first.getAttribute('style') || '').match(/height:\s*(\d+)px/)
-        return m ? parseInt(m[1], 10) : 0
+        return px(first.getAttribute('style') || '', 'height')
       })
       .filter((n) => n > 0)
     const meta = widths.length || heights.length

@@ -6,6 +6,7 @@ import { Spinner } from './ui'
 import { t } from './i18n'
 
 const LENGTHS: Array<{ id: NoteLength; nameKey: string; descKey: string; icon: string }> = [
+  { id: 'keypoints', nameKey: 'org.len.keypoints', descKey: 'org.len.keypointsDesc', icon: '🎯' },
   { id: 'concise', nameKey: 'org.len.concise', descKey: 'org.len.conciseDesc', icon: '⚡' },
   { id: 'standard', nameKey: 'org.len.standard', descKey: 'org.len.standardDesc', icon: '◆' },
   { id: 'detailed', nameKey: 'org.len.detailed', descKey: 'org.len.detailedDesc', icon: '📖' }
@@ -24,11 +25,17 @@ export interface DeckSeed {
 export default function OrganizeDialog({
   title,
   sourceText,
+  transcriptId,
+  docSource,
   initialDecks,
   onClose
 }: {
   title: string
   sourceText: string
+  /** 来源转写记录：用于标记"未完成转笔记"并在转写页继续 */
+  transcriptId?: string
+  /** true = 这是文档笔记的再整理：走"只从文档抓要点"的口径 */
+  docSource?: boolean
   initialDecks?: DeckSeed[]
   onClose: () => void
 }): React.JSX.Element {
@@ -127,6 +134,9 @@ export default function OrganizeDialog({
       {
         title: customTitle.trim() || title,
         sourceText,
+        transcriptId,
+        source: docSource ? 'document' : 'transcript',
+        kind: docSource ? 'doc' : 'lecture',
         slidesPaths: paths.length ? paths : undefined,
         slidesPasswords: paths.length ? passwords : undefined,
         length
@@ -170,7 +180,7 @@ export default function OrganizeDialog({
 
         <div className="mt-4">
           <span className="lbl">{t('org.length')}</span>
-          <div className="grid grid-cols-3 gap-2">
+          <div className="grid grid-cols-2 gap-2">
             {LENGTHS.map((l) => (
               <button
                 key={l.id}
@@ -258,7 +268,12 @@ export default function OrganizeDialog({
           <button className="btn-ghost" onClick={onClose} disabled={organizing}>
             {t('common.cancel')}
           </button>
-          <button className="btn-primary" onClick={() => void start()} disabled={organizing || !sourceText.trim() || !!pending?.passwordNeeded}>
+          <button
+            data-org-run="1"
+            className="btn-primary"
+            onClick={() => void start()}
+            disabled={organizing || !sourceText.trim() || !!pending?.passwordNeeded}
+          >
             {organizing && <Spinner size={14} />}
             {organizing ? t('rec.organizing') : t('org.start')}
           </button>

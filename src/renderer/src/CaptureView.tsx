@@ -3,6 +3,7 @@ import React, { useEffect, useRef, useState } from 'react'
 import { useApp, runOrganize } from './store'
 import { startCapture, type CaptureHandle } from './captureAudio'
 import OrganizeDialog from './OrganizeDialog'
+import { planDrop } from './importDrop'
 import type { DeckDescriptor } from '../../shared/types'
 import { IconMic, IconStop, IconPause, IconPlay, Spinner, SplitterV } from './ui'
 import { t } from './i18n'
@@ -39,7 +40,7 @@ export default function CaptureView(): React.JSX.Element {
   const engineDetail = useApp((s) => s.engineDetail)
   const segments = useApp((s) => s.segments)
   const transcriptText = useApp((s) => s.transcriptText)
-  const draftText = useApp((s) => s.draftText)
+  const asrStatus = useApp((s) => s.asrStatus)
   const settings = useApp((s) => s.settings)
   const elapsedMs = useApp((s) => s.elapsedMs)
   const organizing = useApp((s) => s.organizing)
@@ -58,6 +59,9 @@ export default function CaptureView(): React.JSX.Element {
   const [showOrg, setShowOrg] = useState(false)
   // 导入已有录音
   const [importing, setImporting] = useState(false)
+  // 排队等待转写的音频（录音中拖入的文件） + 转写完等待转成笔记的转写
+  const importQueue = useApp((s) => s.importQueue)
+  const pendingNoteSources = useApp((s) => s.pendingNoteSources)
   const [importStage, setImportStage] = useState<'' | 'decode' | 'ready' | 'transcribe'>('')
   const [importPct, setImportPct] = useState(0)
   const [importPaused, setImportPaused] = useState(false)
@@ -281,7 +285,7 @@ export default function CaptureView(): React.JSX.Element {
       }
       // 无课件：保持原逻辑（自动整理或提示配 Key）
       if (cfg.autoOrganizeOnStop && cfg.llm.apiKey) {
-        await runOrganize({ title: defaultTitle(), sourceText: text }, { auto: true })
+        await runOrganize({ title: defaultTitle(), sourceText: text, transcriptId: archiveIdRef.current ?? undefined }, { auto: true })
       } else if (cfg.autoOrganizeOnStop && !cfg.llm.apiKey) {
         useApp.getState().toastMsg({
           kind: 'info',
@@ -372,9 +376,19 @@ export default function CaptureView(): React.JSX.Element {
       try {
         const p = await window.api.slides.fromFile(file)
         if (!p) continue
-        if (/\.(m4a|mp3|wav|mp4|m4b|aac|flac|ogg|opus|webm|caf|aiff)$/i.test(p)) {
-          // 拖入的是录音文件 → 走导入转写
-          await importPath(p, file.name || p.split('/').pop() || t('note.recordingFallback'))
+        const name = file.name || p.split('/').pop() || t('note.recordingFallback')
+        const st = useApp.getState()
+        const busyNow = st.engine !== 'idle' || st.importing || importing
+        const plan = planDrop([p], busyNow)
+        if (plan.queued.length) {
+          // 拖入的是录音文件，但引擎正忙（录音/转写中）→ 先排队，
+          // 等录音结束、引擎空闲后自动依次转写 → 再一键转成笔记。
+          st.enqueueImport({ path: p, name })
+          st.toastMsg({ kind: 'info', msg: t('cap.importQueued', { n: st.importQueue.length + 1, file: name }) })
+          continue
+        }
+        if (plan.importNow.length) {
+          await importPath(p, name)
           continue
         }
         if (!/\.(pdf|pptx)$/i.test(p)) continue
@@ -472,7 +486,7 @@ export default function CaptureView(): React.JSX.Element {
     try {
       const { paths, passwords } = deckPayload()
       const r = await runOrganize(
-        { title, sourceText: text, slidesPaths: paths, slidesPasswords: passwords },
+        { title, sourceText: text, transcriptId: archiveIdRef.current ?? undefined, slidesPaths: paths, slidesPasswords: passwords },
         { auto: true }
       )
       if (r.ok) useApp.getState().toastMsg({ kind: 'ok', msg: t('cap.orgDone') })
@@ -586,6 +600,28 @@ export default function CaptureView(): React.JSX.Element {
           durationMs: res.durationMs
         })
       }
+      // 转写好了 → 记成"待转笔记"，并在用户开了自动整理时直接整理成笔记
+      const archivedId = archiveIdRef.current
+      const archivedText = useApp.getState().transcriptText.trim()
+      if (res.ok && !res.stopped && archivedId && archivedText) {
+        const cfg = await window.api.settings.get()
+        if (cfg.autoOrganizeOnStop && cfg.llm.apiKey) {
+          await runOrganize(
+            {
+              title: fileName.replace(/\.[a-z0-9]{2,5}$/i, ''),
+              sourceText: archivedText,
+              transcriptId: archivedId
+            },
+            { auto: true }
+          )
+        } else {
+          const cur = useApp.getState().pendingNoteSources
+          useApp.getState().setPendingNoteSources([
+            ...cur.filter((x) => x.id !== archivedId),
+            { id: archivedId, title: fileName.replace(/\.[a-z0-9]{2,5}$/i, ''), text: archivedText }
+          ])
+        }
+      }
       if (res.stopped) {
         const n = res.segmentCount ?? 0
         st.toastMsg({ kind: 'info', msg: t('cap.importStopped', { file: fileName, n }) })
@@ -609,6 +645,23 @@ export default function CaptureView(): React.JSX.Element {
     }
   }
 
+  // 一键把"刚转写完的文件"整理成笔记（逐个整理，每篇都有自己的断点缓存）
+  const convertPendingToNotes = async (): Promise<void> => {
+    const list = useApp.getState().pendingNoteSources
+    if (!list.length || organizing) return
+    for (const item of list) {
+      const r = await runOrganize(
+        { title: item.title, sourceText: item.text, transcriptId: item.id },
+        { auto: true }
+      )
+      if (!r.ok) {
+        useApp.getState().toastMsg({ kind: 'err', msg: t('cap.importNoteFail', { file: item.title }) })
+        return
+      }
+      useApp.getState().setPendingNoteSources([])
+    }
+  }
+
   const handleImport = async (): Promise<void> => {
     const st = useApp.getState()
     if (importing || st.engine !== 'idle') return
@@ -623,6 +676,27 @@ export default function CaptureView(): React.JSX.Element {
       })
     }
   }
+
+  // 排队中的文件：等引擎彻底空闲后自动依次转写（录音中拖入的文件就是走这里）
+  const drainingRef = useRef(false)
+  useEffect(() => {
+    if (drainingRef.current) return
+    if (engine !== 'idle' || importing || busyAction !== '') return
+    const q = useApp.getState().importQueue
+    if (!q.length) return
+    drainingRef.current = true
+    const item = q[0]
+    void (async () => {
+      try {
+        useApp.getState().toastMsg({ kind: 'info', msg: t('cap.importQueueRun', { file: item.name }) })
+        await importPath(item.path, item.name)
+      } finally {
+        useApp.getState().shiftImport()
+        drainingRef.current = false
+      }
+    })()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [engine, importing, busyAction, importQueue.length])
 
   const handleImportPauseToggle = async (): Promise<void> => {
     if (importPaused) await window.api.rec.importResume()
@@ -866,16 +940,62 @@ export default function CaptureView(): React.JSX.Element {
                 {importSkip > 0 ? ` · ${t('cap.importSkip', { s: fmtClock(importSkip) })}` : ''}
               </div>
             )}
-            <div className="flex gap-1.5">
+            <div className="flex flex-wrap gap-1.5">
               <button
-                className="btn-ghost flex-1 !px-2 !py-1.5 text-xs"
+                className="btn-ghost min-w-0 flex-1 !px-2 !py-1.5 text-xs"
                 onClick={() => void handleImportPauseToggle()}
                 title={importPaused ? t('cap.importResume') : t('cap.importPause')}
               >
                 {importPaused ? t('cap.importResume') : t('cap.importPause')}
               </button>
-              <button className="btn-danger flex-1 !px-2 !py-1.5 text-xs" onClick={() => void handleImportStop()} title={t('cap.importStop')}>
+              <button className="btn-danger min-w-0 flex-1 !px-2 !py-1.5 text-xs" onClick={() => void handleImportStop()} title={t('cap.importStop')}>
                 {t('cap.importStop')}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* 录音中拖进来的文件：排队等待，录音结束后自动转写 */}
+        {importQueue.length > 0 && !importing && (
+          <div
+            data-import-queue="1"
+            className="mt-2 rounded-xl border border-edge bg-[var(--surface-2)] px-3 py-2 text-[11px] text-[color:var(--dim)]"
+          >
+            <div className="flex items-center gap-1.5">
+              <span aria-hidden>📥</span>
+              <span className="min-w-0 flex-1 truncate">
+                {t('cap.importQueueHint', { n: importQueue.length, files: importQueue.map((q) => q.name).join('、') })}
+              </span>
+            </div>
+          </div>
+        )}
+
+        {/* 转写完的音频：一键转成笔记 */}
+        {pendingNoteSources.length > 0 && !importing && (
+          <div
+            data-note-ready="1"
+            className="mt-2 rounded-xl border border-[var(--accent)]/40 bg-[var(--accent-soft)] px-3 py-2"
+          >
+            <div className="min-w-0 truncate text-[11px] text-[color:var(--fg)]">
+              {t('cap.noteReady', { n: pendingNoteSources.length, files: pendingNoteSources.map((x) => x.title).join('、') })}
+            </div>
+            {/* 窄列下不要再并排：btn 是 nowrap + min-width:auto，两个 flex-1 会被文字顶出容器 */}
+            <div className="mt-1.5 flex flex-col gap-1.5">
+              <button
+                data-note-convert="1"
+                className="btn-primary w-full min-w-0 !px-2 !py-1.5 text-xs"
+                onClick={() => void convertPendingToNotes()}
+                disabled={organizing}
+              >
+                <span className="min-w-0 truncate">{organizing ? t('trans.organizing') : t('cap.noteConvert')}</span>
+              </button>
+              <button
+                data-note-keep="1"
+                className="btn-ghost w-full min-w-0 !px-1.5 !py-1 text-[11px]"
+                onClick={() => useApp.getState().setPendingNoteSources([])}
+                disabled={organizing}
+              >
+                <span className="min-w-0 truncate">{t('cap.noteKeepLater')}</span>
               </button>
             </div>
           </div>
@@ -936,11 +1056,22 @@ export default function CaptureView(): React.JSX.Element {
           placeholder={rec ? t('cap.phListening') : t('cap.phStart')}
           spellCheck={false}
         />
-        <div className="flex min-h-[54px] items-start gap-2 border-t border-edge/60 px-5 py-3 text-sm">
-          <span className="mt-0.5 shrink-0 rounded bg-surface-3 px-1.5 py-0.5 text-[10px] font-medium text-[color:var(--dim)]">{t('rec.draft')}</span>
-          <span className={`italic leading-relaxed ${rec ? 'text-[color:var(--dim)]' : 'text-[color:var(--dim)]/60'}`}>
-            {draftText || (rec ? t('cap.listening') : t('cap.draftGone'))}
+        {/* 转写状态栏（替代原来的"草稿预览"）：引擎在忙什么、还有几句在排队、用的什么模型 */}
+        <div className="flex min-h-[54px] flex-wrap items-center gap-x-3 gap-y-1 border-t border-edge/60 px-5 py-3 text-xs text-[color:var(--dim)]">
+          <span className="inline-flex items-center gap-1.5">
+            {rec && asrStatus?.busy ? <Spinner size={11} /> : <span className={`inline-block h-2 w-2 rounded-full ${rec ? 'bg-[var(--err)]' : 'bg-surface-3'}`} />}
+            <span>{rec ? (asrStatus?.busy ? t('cap.st.transcribing') : t('cap.st.listening')) : t('cap.st.idle')}</span>
           </span>
+          {rec && asrStatus && (
+            <>
+              <span>{t('cap.st.finals', { n: asrStatus.finals })}</span>
+              {asrStatus.queued > 0 && <span className="text-[var(--warn)]">{t('cap.st.queued', { n: asrStatus.queued })}</span>}
+              <span>{t('cap.st.elapsed', { t: fmtClock(Math.floor(asrStatus.elapsedMs / 1000)) })}</span>
+              <span className="ml-auto font-mono text-[10px]">
+                {asrStatus.model.replace(/^ggml-/, '').replace(/\.bin$/, '')} · {asrStatus.gpu ? 'GPU' : 'CPU'}
+              </span>
+            </>
+          )}
         </div>
       </div>
 
@@ -1017,6 +1148,7 @@ export default function CaptureView(): React.JSX.Element {
         <OrganizeDialog
           title={defaultTitle()}
           sourceText={useApp.getState().transcriptText.trim()}
+          transcriptId={archiveIdRef.current ?? undefined}
           initialDecks={decksRef.current}
           onClose={() => setShowOrg(false)}
         />

@@ -26,3 +26,16 @@ native/mac-cpu/
 
 # Windows 解码器：约 83MB，超过 GitHub 100MB 限制，构建时用 scripts/fetch-win-ffmpeg.sh 下载
 native/win/bin/ffmpeg.exe
+
+# ── Android 手机端（Capacitor） ──────────────────────────────
+mobile/node_modules/
+mobile/dist/
+mobile/android/.gradle/
+mobile/android/build/
+mobile/android/app/build/
+mobile/android/local.properties
+mobile/android/app/src/main/assets/public/
+mobile/android/app/src/main/assets/capacitor.config.json
+*.jks
+*.keystore
+keystore.properties

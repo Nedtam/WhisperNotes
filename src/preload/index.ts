@@ -23,7 +23,7 @@ const api: WhisperNotesApi = {
     }
   },
   onAsrSegment: (cb) => on('asr:segment', cb),
-  onAsrDraft: (cb) => on('asr:draft', cb),
+  onAsrStatus: (cb) => on('asr:status', cb),
   onAsrState: (cb) => on('asr:state', cb),
   onImportProgress: (cb) => on('import:progress', cb),
   onCloseRequest: (cb) => on('app:closeRequest', cb),
@@ -72,6 +72,11 @@ const api: WhisperNotesApi = {
     pickFolder: () => ipcRenderer.invoke('dialog:pickFolder') as Promise<string | null>
   },
 
+  doc: {
+    pick: () => ipcRenderer.invoke('doc:pick') as Promise<{ path: string; fileName: string } | null>,
+    parse: (p: string, password = '') => ipcRenderer.invoke('doc:parse', p, password)
+  },
+
   slides: {
     pick: () => ipcRenderer.invoke('slides:pick'),
     parse: (p) => ipcRenderer.invoke('slides:parse', p),
@@ -93,12 +98,52 @@ const api: WhisperNotesApi = {
     resetDailyUsage: () => ipcRenderer.invoke('settings:resetUsage')
   },
 
+  cards: {
+    list: (filter) => ipcRenderer.invoke('cards:list', filter),
+    stats: () => ipcRenderer.invoke('cards:stats'),
+    generate: (req) => ipcRenderer.invoke('cards:generate', req),
+    cancel: (jobId) => ipcRenderer.invoke('cards:cancel', jobId),
+    update: (id, patch) => ipcRenderer.invoke('cards:update', id, patch),
+    remove: (id) => ipcRenderer.invoke('cards:remove', id),
+    removeForNote: (noteId: string) => ipcRenderer.invoke('cards:removeForNote', noteId),
+    review: (id, grade, ms) => ipcRenderer.invoke('cards:review', id, grade, ms),
+    onProgress: (cb: (p: import('../shared/types').CardGenProgress & { jobId: string }) => void) => {
+      const h = (_e: unknown, p: import('../shared/types').CardGenProgress & { jobId: string }): void => cb(p)
+      ipcRenderer.on('cards:progress', h)
+      return () => ipcRenderer.removeListener('cards:progress', h)
+    },
+    onDone: (cb: (d: { jobId: string; cards: number; notes?: number; failed?: number; requests?: number; canceled?: boolean; error?: string }) => void) => {
+      const h = (_e: unknown, p: { jobId: string; cards: number; notes?: number; failed?: number; requests?: number; canceled?: boolean; error?: string }): void => cb(p)
+      ipcRenderer.on('cards:done', h)
+      return () => ipcRenderer.removeListener('cards:done', h)
+    }
+  },
+
+  mobile: {
+    status: () => ipcRenderer.invoke('mobile:status'),
+    setEnabled: (enabled: boolean) => ipcRenderer.invoke('mobile:setEnabled', enabled),
+    qr: () => ipcRenderer.invoke('mobile:qr'),
+    revoke: (id: string) => ipcRenderer.invoke('mobile:revoke', id),
+    revokeAll: () => ipcRenderer.invoke('mobile:revokeAll')
+  },
+
   llm: {
     organize: (req: OrganizeRequest) => ipcRenderer.invoke('llm:organize', req),
     organizeStart: (req: OrganizeRequest) => ipcRenderer.invoke('llm:organizeStart', req),
     organizeCancel: (jobId: string) => ipcRenderer.invoke('llm:organizeCancel', jobId),
     polish: (req: PolishRequest) => ipcRenderer.invoke('llm:polish', req),
-    validateKey: () => ipcRenderer.invoke('llm:validate')
+    polishCancel: () => ipcRenderer.invoke('llm:polishCancel'),
+    validateKey: () => ipcRenderer.invoke('llm:validate'),
+    testChannel: (ch: { baseUrl: string; apiKey: string; modelId: string; local?: boolean }) =>
+      ipcRenderer.invoke('llm:testChannel', ch),
+    listModels: (ch: { baseUrl: string; apiKey: string }) => ipcRenderer.invoke('llm:listModels', ch)
+  },
+
+  trans: {
+    setNoteStatus: (id: string, status: 'none' | 'ok' | 'incomplete', error?: string, noteId?: string) =>
+      ipcRenderer.invoke('trans:setNoteStatus', id, status, error, noteId),
+    get: (id: string) => ipcRenderer.invoke('trans:get', id),
+    clearCheckpoint: (sourceText: string) => ipcRenderer.invoke('trans:clearCheckpoint', sourceText)
   },
 
   models: {

@@ -9,14 +9,39 @@ export interface NoteLengthMeta {
 
 /** 长度档元信息（文案 key；界面用的名字/描述在渲染层 i18n 的 org.len.* 里） */
 export const NOTE_LENGTHS: NoteLengthMeta[] = [
+  { id: 'keypoints', name: 'org.len.keypoints', desc: 'org.len.keypointsDesc' },
   { id: 'concise', name: 'org.len.concise', desc: 'org.len.conciseDesc' },
   { id: 'standard', name: 'org.len.standard', desc: 'org.len.standardDesc' },
   { id: 'detailed', name: 'org.len.detailed', desc: 'org.len.detailedDesc' }
 ]
 
+/**
+ * 文档模式：输入是"文档"（课件/讲义/论文），不是课堂语音转写。
+ * 与语音模式的根本差别在这里 —— 文档信息密度高、没有口语噪声，
+ * 所以目标是"抓要点"，而不是"把讲过的都覆盖一遍"。
+ */
+export function documentRule(): string {
+  return `
+DOCUMENT MODE — the input is a DOCUMENT (slides, handout, paper or report), NOT a lecture transcript.
+- The document is the ONLY source of content. Never add outside knowledge, never assume what a lecturer said, never mention a class recording or a speaker.
+- Extract the KEY POINTS the document actually states: main claims, definitions, formulas, numbers, procedures and conclusions.
+- Keep the document's own terminology and wording. Reproduce every number, symbol, formula and proper name exactly as written.
+- The input labels each page as [p.N]. After a key point, add its source page like (p.12) — only cite pages that really contain that point.
+- Skip boilerplate: title pages, tables of contents, footers, copyright lines, acknowledgements and reference lists (keep a citation only when the result itself matters).
+- Do NOT invent examples or expand abbreviations the document does not define.
+- Output Markdown only.`
+}
+
 /** 长度档指令（追加到 system prompt） */
 export function lengthRule(length: NoteLength | undefined): string {
   switch (length ?? 'standard') {
+    case 'keypoints':
+      return `
+LENGTH MODE: KEY POINTS.
+- Be dense and selective: keep only what is worth remembering — conclusions, definitions, formulas, key numbers and explicit action items.
+- Target roughly 10-20% of the input length. One line per bullet, grouped under the document's own section headings.
+- Drop filler, obvious restatements and decorative examples; keep an example only if the point is unusable without it.
+- Prefer a table when the document contrasts several items (options, parameters, cases).`
     case 'concise':
       return `
 LENGTH MODE: CONCISE.

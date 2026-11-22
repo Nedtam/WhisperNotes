@@ -41,6 +41,9 @@ mac:
   extraResources:
     - from: native/mac
       to: native/mac
+    # 手机端安装包：设置 → 手机连接 → 扫码页可从本机直接下载
+    - from: native/android/WhisperNotes-android.apk
+      to: android/WhisperNotes-android.apk
   target:
     - target: dmg
       arch:
@@ -62,6 +65,9 @@ win:
   extraResources:
     - from: native/win
       to: native/win
+    # 手机端安装包：设置 → 手机连接 → 扫码页可从本机直接下载
+    - from: native/android/WhisperNotes-android.apk
+      to: android/WhisperNotes-android.apk
 
 nsis:
   oneClick: false

@@ -1,5 +1,5 @@
 // 转写编排：PCM 流入 → VAD 分句 → whisper 转写 → 本地清洗 → 上行事件
-import type { AppSettings, AsrSegment, AsrDraft, EngineState } from '@shared/types'
+import type { AppSettings, AsrSegment, AsrStatus, EngineState } from '@shared/types'
 import { VadSegmenter } from './segmenter'
 import { WhisperCppEngine, type AsrEngine } from './whisperServer'
 import { cleanSegment } from './clean'
@@ -14,8 +14,9 @@ import * as path from 'node:path'
 
 export interface AsrCallbacks {
   onSegment: (s: AsrSegment) => void
-  onDraft: (d: AsrDraft) => void
   onState: (m: { state: EngineState; detail?: string }) => void
+  /** 状态栏数据（句数/排队/忙闲/模型/GPU） */
+  onStatus: (st: AsrStatus) => void
 }
 
 export interface StartOutcome {
@@ -37,6 +38,7 @@ export class AsrManager {
   private sessionId = ''
   private startedAt = 0
   private segmenter: VadSegmenter | null = null
+  /** 草稿专用引擎（只有配置了草稿小模型时才启用；懒启动，用完常驻避免反复加载） */
   private wavWriter: WavWriter | null = null
   private wavPath: string | null = null
   private queue: Array<{ samples: Float32Array; t0: number }> = []
@@ -199,8 +201,7 @@ export class AsrManager {
         {
           onFinal: (_s, t0, t1) => {
             utts.push({ t0, t1 }) // t1 由 flush 提供，含尾 padding
-          },
-          onPartial: () => undefined
+          }
         },
         {
           sampleRate: 16000,
@@ -419,8 +420,7 @@ export class AsrManager {
 
     this.segmenter = new VadSegmenter(
       {
-        onFinal: (samples, t0) => this.enqueueFinal(samples, t0),
-        onPartial: (samples, t0) => this.onPartial(samples, t0)
+        onFinal: (samples, t0) => this.enqueueFinal(samples, t0)
       },
       {
         sampleRate: 16000,
@@ -471,12 +471,14 @@ export class AsrManager {
 
   private enqueueFinal(samples: Float32Array, t0: number): void {
     this.queue.push({ samples, t0 })
+    this.emitStatus(true)
     void this.processQueue()
   }
 
   private async processQueue(): Promise<void> {
     if (this.processing) return
     this.processing = true
+    this.emitStatus(true)
     try {
       while (this.queue.length > 0) {
         const item = this.queue.shift()
@@ -490,12 +492,28 @@ export class AsrManager {
       }
     } finally {
       this.processing = false
-      // 队列清空后若还有攒着的 partial，允许再吐一次
-      if (this.pendingPartial) {
-        const p = this.pendingPartial
-        this.pendingPartial = null
-        void this.runPartial(p)
-      }
+      this.emitStatus(true)
+    }
+  }
+
+  /** 上报状态栏数据（节流：最快 250ms 一次，避免刷爆 IPC） */
+  private lastStatusAt = 0
+  private emitStatus(force = false): void {
+    const now = Date.now()
+    if (!force && now - this.lastStatusAt < 250) return
+    this.lastStatusAt = now
+    try {
+      this.callbacks.onStatus({
+        state: this.state,
+        busy: this.processing,
+        queued: this.queue.length,
+        finals: this.finalCount,
+        elapsedMs: this.startedAt ? now - this.startedAt : 0,
+        model: path.basename(this.modelPathCache || ''),
+        gpu: this.gpuCache !== false
+      })
+    } catch {
+      /* 状态上报不能影响转写 */
     }
   }
 
@@ -533,43 +551,6 @@ export class AsrManager {
     const set = new Set([...this.correctionTerms, ...(list ?? [])])
     this.correctionTerms = [...set]
     if ((list ?? []).length) this.correctionEnabled = true
-  }
-
-  private onPartial(samples: Float32Array, _t0: number): void {
-    const settings = this.settingsSnapshot
-    if (!settings || !settings.whisper.partialPreview) return
-    if (this.queue.length >= settings.whisper.maxFinalQueue) return // 队列积压时跳过草稿
-    if (this.partialBusy || this.processing) {
-      this.pendingPartial = samples // 攒一份最新的
-      return
-    }
-    void this.runPartial(samples)
-  }
-
-  private async runPartial(samples: Float32Array): Promise<void> {
-    const settings = this.settingsSnapshot
-    if (!settings) return
-    this.partialBusy = true
-    try {
-      // 节流：与上一次草稿至少间隔
-      const now = Date.now()
-      if (now - this.lastDraftSentAt < 650) return
-      const text = await this.engine.transcribeWav(encodeWav(agcUtterance(samples)))
-      this.lastDraftSentAt = Date.now()
-      if (!text) return
-      const outcome = cleanSegment(text, settings.clean)
-      if (!outcome.text) return
-      this.callbacks.onDraft({ text: outcome.text, t0: 0, sinceLastUpdate: true })
-    } catch {
-      /* ignore */
-    } finally {
-      this.partialBusy = false
-      if (this.pendingPartial && this.queue.length === 0 && !this.processing) {
-        const p = this.pendingPartial
-        this.pendingPartial = null
-        void this.runPartial(p)
-      }
-    }
   }
 
   async stop(): Promise<StopOutcome> {

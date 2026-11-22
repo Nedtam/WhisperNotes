@@ -38,10 +38,13 @@ import { openDb, ensureGuideNotes } from './db'
 import { registerIpc, emit } from './ipc'
 import { AsrManager } from './asrManager'
 import { probeBinary } from './whisperServer'
-import type { AsrSegment, AsrDraft } from '@shared/types'
+import { MobileServer } from './mobile/server'
+import { findApk } from './mobile/apk'
+import type { AsrSegment } from '@shared/types'
 
 let mainWindow: BrowserWindow | null = null
 let asr: AsrManager | null = null
+let mobile: MobileServer | null = null
 let quitConfirmed = false
 const lastRendererCrashAt = new Map<number, number>()
 
@@ -205,7 +208,7 @@ function autoDownloadModelIfNeeded(): void {
   }
 }
 
-function bootAsr(): void {
+async function bootAsr(): Promise<void> {
   if (asr) return
   const d = dirs()
   initPaths(d.base)
@@ -214,20 +217,49 @@ function bootAsr(): void {
   asr = new AsrManager(
     {
       onSegment: (s: AsrSegment) => emit('asr:segment', s),
-      onDraft: (draft: AsrDraft) => emit('asr:draft', draft),
+      onStatus: (st) => emit('asr:status', st),
       onState: (m) => emit('asr:state', m)
     },
     { recordings: d.recordings, models: d.models, logs: d.logs }
   )
   initOrgLog(d.logs)
+  // 手机连接（局域网只读）：默认不启动，设置里打开就常驻
+  mobile = new MobileServer({
+    logsDir: d.logs,
+    version: app.getVersion(),
+    apkPath: () =>
+      findApk({
+        userData: app.getPath('userData'),
+        resourcesPath: process.resourcesPath,
+        appDir: path.join(__dirname, '../..')
+      })
+  })
   // 存量笔记里的 LaTeX 写法（\rightarrow 等）一次性还原成真正的符号
   try {
-    const r = normalizeStoredContent()
-    if (r.notes || r.transcripts) crashLog(`notation migration: notes=${r.notes} transcripts=${r.transcripts}`)
+    const r = await normalizeStoredContent()
+    if (r.notes || r.transcripts || r.highlights)
+      crashLog(
+        `notation migration: notes=${r.notes} transcripts=${r.transcripts} highlights=${r.highlights} backup=${r.backup ?? 'none'}`
+      )
   } catch (e) {
     crashLog(`notation migration error: ${e instanceof Error ? e.message : String(e)}`)
   }
-  registerIpc({ getWindow: () => mainWindow, asr, modelsDir: d.models, openChildWindow: createChildWindow })
+  registerIpc({
+    getWindow: () => mainWindow,
+    asr,
+    modelsDir: d.models,
+    openChildWindow: createChildWindow,
+    mobile: mobile as MobileServer
+  })
+  // 设置里已开启 → 开机自动监听（端口沿用上次记录的）
+  try {
+    if (loadConfig().mobile?.enabled && mobile) {
+      const r = await mobile.start(loadConfig().mobile?.port ?? 0)
+      if (!r.ok) crashLog(`mobile server start failed: ${r.error ?? ''}`)
+    }
+  } catch (e) {
+    crashLog(`mobile server error: ${e instanceof Error ? e.message : String(e)}`)
+  }
 }
 
 async function smokeTest(): Promise<void> {
@@ -249,13 +281,14 @@ async function smokeTest(): Promise<void> {
   app.exit(0)
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   initPaths(app.getPath('userData'))
   // 迁移：明文 API Key → 本地加密存储
   ensureSecretsEncrypted()
   // 首次运行：把随包附带的默认模型放进模型目录（引擎由 probeBinary 直接使用内置二进制）
   provisionBundledModel()
-  bootAsr()
+  // 迁移（含备份）必须在开窗之前完成，避免和用户编辑抢同一条笔记
+  await bootAsr()
 
   // Dock 图标（仅开发/直跑时替换 Electron 默认图标）
   if (process.platform === 'darwin' && hasAppIcon) {
